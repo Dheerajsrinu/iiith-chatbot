@@ -34,15 +34,15 @@ class CroppedProductInference():
                 crop_filename = f"{image_name.split('.')[0]}_crop_{i}.jpg"
                 # cv2.imwrite(os.path.join(out_dir, crop_filename), crop)
                 if crop is None or crop.size == 0:
-                    print("❌ Empty crop, skipping")
+                    print("Empty crop, skipping")
                     continue
                 save_path = os.path.normpath(os.path.join(out_dir, crop_filename))
                 success = cv2.imwrite(save_path, crop)
                 print("success -> ",success)
                 if not success:
-                    print("❌ Failed to save:", save_path)
+                    print("Failed to save:", save_path)
                 else:
-                    print("✅ Saved:", save_path)
+                    print("Saved:", save_path)
                 
                 print(f"image_name: {image_name}, class_label: {class_label}, confidence: {confidence:.4f}, saved to folder: {class_folder}")
 

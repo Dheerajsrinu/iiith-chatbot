@@ -1,3 +1,4 @@
+import time
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.tools import tool
 from app.use_case.fetch_shelf_details import FetchShelfDetails
@@ -5,6 +6,7 @@ from app.use_case.product_recognition import ProductDetails
 from typing import List
 from app.use_case.product_as_object_detection import FetchProductAsObjectDetails
 from app.use_case.calculate_empty_shelf_percentage import EmptyShelfPercentageDetails
+from app.backend.db import log_model_performance
 
 @tool
 def calculator( first_num: int, second_num: int, operation: str) -> float:
@@ -64,8 +66,23 @@ def detect_shelves(image_path: str) -> dict:
     """
     try:
         print("into detect_shelves")
+        start_time = time.time()
+        
         request_body = {"file_path": image_path}
         result = FetchShelfDetails().execute(request_body)
+        
+        # Log model performance
+        duration_ms = (time.time() - start_time) * 1000
+        try:
+            log_model_performance(
+                model_name="YOLO_Shelf_Detection",
+                operation="detect_shelves",
+                duration_ms=duration_ms,
+                input_size=image_path
+            )
+        except:
+            pass  # Don't fail if telemetry fails
+        
         return {
             "status": "success",
             "data": result
@@ -100,8 +117,23 @@ def detect_products(image_path: str) -> dict:
         product bounding boxes and count
     """
     try:
+        start_time = time.time()
+        
         request_body = {"file_path": image_path}
         result = FetchProductAsObjectDetails().execute(request_body)
+        
+        # Log model performance
+        duration_ms = (time.time() - start_time) * 1000
+        try:
+            log_model_performance(
+                model_name="YOLO_Product_Detection",
+                operation="detect_products",
+                duration_ms=duration_ms,
+                input_size=image_path
+            )
+        except:
+            pass
+        
         return {
             "status": "success",
             "data": result
@@ -133,8 +165,23 @@ def calculate_empty_shelf_percentage(image_path: str) -> dict:
         empty percentage, capacity, missing products
     """
     try:
+        start_time = time.time()
+        
         request_body = {"file_path": image_path}
         result = EmptyShelfPercentageDetails().execute(request_body)
+        
+        # Log model performance
+        duration_ms = (time.time() - start_time) * 1000
+        try:
+            log_model_performance(
+                model_name="Empty_Shelf_Calculator",
+                operation="calculate_empty_percentage",
+                duration_ms=duration_ms,
+                input_size=image_path
+            )
+        except:
+            pass
+        
         return {
             "status": "success",
             "data": result
@@ -174,11 +221,26 @@ def recognize_products(
         product names, confidence scores
     """
     try:
+        start_time = time.time()
+        
         request_body = {
             "file_paths_list": image_paths,
             "request_id": request_id
         }
         result = ProductDetails().execute(request_body)
+        
+        # Log model performance
+        duration_ms = (time.time() - start_time) * 1000
+        try:
+            log_model_performance(
+                model_name="SimCLR_Product_Recognition",
+                operation="recognize_products",
+                duration_ms=duration_ms,
+                input_size=f"{len(image_paths)} images"
+            )
+        except:
+            pass
+        
         return {
             "status": "success",
             "request_id": request_id,

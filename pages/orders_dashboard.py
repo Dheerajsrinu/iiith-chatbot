@@ -16,7 +16,7 @@ from app.ui.styles import (
 # -------------------------------------------------
 st.set_page_config(
     page_title="My Orders | Retail Assistant",
-    page_icon="📦",
+    page_icon="🛒",
     layout="wide"
 )
 
@@ -51,23 +51,27 @@ with st.sidebar:
     # ----- Navigation -----
     st.markdown("##### Navigation")
     
-    # Only show Chat button (we're already on Orders page)
-    if st.button("💬  Chat Assistant", use_container_width=True, key="nav_chat"):
+    # Chat button
+    if st.button("Chat Assistant", use_container_width=True, key="nav_chat"):
         st.switch_page("chatbot.py")
     
-    st.divider()
+    # Manager Dashboard (only for store managers)
+    if st.session_state.get("user_role") == "store_manager":
+        if st.button("Manager Dashboard", use_container_width=True, key="nav_manager"):
+            st.switch_page("pages/manager_dashboard.py")
     
-    # Spacer
-    st.markdown('<div style="flex: 1; min-height: 200px;"></div>', unsafe_allow_html=True)
+    # ----- Spacer to push bottom section down -----
+    st.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
     
-    st.divider()
+    # ----- Fixed Bottom Section -----
+    st.markdown("---")  # Divider
     
-    # Logout button
-    if st.button("🚪 Sign Out", use_container_width=True, key="logout"):
+    # Logout button (fixed position)
+    if st.button("Sign Out", use_container_width=True, key="logout"):
         st.session_state.clear()
         st.rerun()
     
-    # User profile at bottom
+    # User profile at bottom (fixed position)
     user_email = st.session_state.get("user_email", "User")
     render_user_profile_bottom(user_email)
 
@@ -79,19 +83,19 @@ render_header_compact("My Orders", "View your order history")
 orders = get_orders_by_user(user_id)
 
 if not orders:
-    render_empty_state("You haven't placed any orders yet", "📭")
+    render_empty_state("You haven't placed any orders yet", "")
     
     st.markdown("")
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        if st.button("🛒 Start Shopping", use_container_width=True, type="primary"):
+        if st.button("Start Shopping", use_container_width=True, type="primary"):
             st.switch_page("chatbot.py")
     st.stop()
 
 # -------------------------------------------------
 # Metrics Overview
 # -------------------------------------------------
-st.markdown("##### 📊 Overview")
+st.markdown("##### Overview")
 
 total_orders = len(orders)
 total_items = sum(sum(products.values()) for _, products, _ in orders)
@@ -100,17 +104,17 @@ unique_products = len(set(product for _, products, _ in orders for product in pr
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    render_stat_card("Total Orders", total_orders, "📦")
+    st.metric("Total Orders", total_orders)
     
 with col2:
-    render_stat_card("Items Purchased", total_items, "🛍️")
+    st.metric("Items Purchased", total_items)
     
 with col3:
-    render_stat_card("Unique Products", unique_products, "🏷️")
+    st.metric("Unique Products", unique_products)
     
 with col4:
     avg_items = round(total_items / total_orders, 1) if total_orders > 0 else 0
-    render_stat_card("Avg Items/Order", avg_items, "📈")
+    st.metric("Avg Items/Order", avg_items)
 
 st.markdown("")
 st.divider()
@@ -118,7 +122,7 @@ st.divider()
 # -------------------------------------------------
 # Orders List
 # -------------------------------------------------
-st.markdown("##### 🧾 Order History")
+st.markdown("##### Order History")
 
 # Filter options
 col1, col2 = st.columns([3, 1])
@@ -191,7 +195,7 @@ for order_id, products, created_at in orders:
                             padding: 0.2rem 0.6rem;
                             font-size: 0.75rem;
                             display: inline-block;
-                        ">× {quantity}</div>
+                        ">x {quantity}</div>
                     </div>
                     """, unsafe_allow_html=True)
             
@@ -217,6 +221,6 @@ st.divider()
 
 st.markdown("""
 <div style="text-align: center; color: #a0aec0; font-size: 0.8rem; padding: 0.5rem 0;">
-    Need help? Contact <strong>support@iiith.ac.in</strong>
+    Need help? Contact support@iiith.ac.in
 </div>
 """, unsafe_allow_html=True)

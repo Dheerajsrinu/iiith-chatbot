@@ -249,14 +249,14 @@ def validator_approved_node(state: GaurdrailState):
     return {
         **state,
         "messages": [
-            AIMessage(content="✅ Validation Approved. Proceeding with the process.\n\n")
+            AIMessage(content="Validation Approved. Proceeding with the process.\n\n")
         ]
     }
 
 def validator_rejected_node(state: GaurdrailState):
     return {
         "messages": [
-            AIMessage(content="❌ Validation rejected. Please ask something related to retail products or product details.")
+            AIMessage(content="Validation rejected. Please ask something related to retail products or product details.")
         ]
     }
 

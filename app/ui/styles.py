@@ -60,6 +60,23 @@ def apply_custom_styles():
         
         [data-testid="stSidebar"] > div:first-child {{
             padding-top: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }}
+        
+        /* Make sidebar content use flexbox for sticky bottom */
+        [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 100%;
+        }}
+        
+        /* Spacer class to push content to bottom */
+        .sidebar-spacer {{
+            flex: 1;
+            min-height: 50px;
         }}
         
         [data-testid="stSidebar"] * {{
@@ -318,11 +335,15 @@ def apply_custom_styles():
 
 
 def render_header_compact(title="Retail Assistant", subtitle=None):
-    """Render a compact branded header"""
+    """Render a compact branded header with digital cart icon"""
     subtitle_html = f'<p class="iiith-subtitle-compact">{subtitle}</p>' if subtitle else ''
     st.markdown(f"""
     <div class="iiith-header-compact">
-        <div class="iiith-logo-small">🛒</div>
+        <div class="iiith-logo-small">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 3H5L5.4 5M7 13H17L21 5H5.4M7 13L5.4 5M7 13L4.707 15.293C4.077 15.923 4.523 17 5.414 17H17M17 17C15.895 17 15 17.895 15 19C15 20.105 15.895 21 17 21C18.105 21 19 20.105 19 19C19 17.895 18.105 17 17 17ZM9 19C9 20.105 8.105 21 7 21C5.895 21 5 20.105 5 19C5 17.895 5.895 17 7 17C8.105 17 9 17.895 9 19Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </div>
         <div>
             <h1 class="iiith-title-compact">{title}</h1>
             {subtitle_html}
@@ -332,7 +353,7 @@ def render_header_compact(title="Retail Assistant", subtitle=None):
 
 
 def render_sidebar_logo():
-    """Render sidebar logo at top"""
+    """Render sidebar logo at top with digital cart icon"""
     st.markdown("""
     <div style="
         text-align: center;
@@ -340,7 +361,21 @@ def render_sidebar_logo():
         margin: -1rem -1rem 0 -1rem;
         background: rgba(0,0,0,0.1);
     ">
-        <div style="font-size: 2.5rem; margin-bottom: 0.25rem;">🛒</div>
+        <div style="
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 0.5rem;
+            background: rgba(255,255,255,0.15);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid rgba(255,255,255,0.3);
+        ">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 3H5L5.4 5M7 13H17L21 5H5.4M7 13L5.4 5M7 13L4.707 15.293C4.077 15.923 4.523 17 5.414 17H17M17 17C15.895 17 15 17.895 15 19C15 20.105 15.895 21 17 21C18.105 21 19 20.105 19 19C19 17.895 18.105 17 17 17ZM9 19C9 20.105 8.105 21 7 21C5.895 21 5 20.105 5 19C5 17.895 5.895 17 7 17C8.105 17 9 17.895 9 19Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </div>
         <div style="font-size: 1rem; font-weight: 600;">Retail Assistant</div>
     </div>
     """, unsafe_allow_html=True)
@@ -448,3 +483,21 @@ def render_image_preview_card(image_count):
 def render_processing_status(message="Processing..."):
     """Render processing status indicator"""
     return st.status(message, expanded=True)
+
+
+def get_cart_avatar():
+    """Return cart icon SVG as data URL for use as avatar"""
+    # Return a simple cart emoji that works as avatar
+    return "🛒"
+
+
+def render_sidebar_bottom_section(email, on_signout=None):
+    """Render the sticky bottom section of sidebar with Sign Out and profile"""
+    st.markdown("""
+    <div style="
+        margin-top: auto;
+        padding-top: 1rem;
+        border-top: 1px solid rgba(255,255,255,0.2);
+    ">
+    </div>
+    """, unsafe_allow_html=True)

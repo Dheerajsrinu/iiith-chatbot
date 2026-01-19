@@ -129,6 +129,7 @@ desktop.ini
 # Inference outputs
 inference_outputs/
 results/
+app/.env
 
 # Local config overrides
 config.local.py
