@@ -289,23 +289,48 @@ def chatbot_router(state: ChatState):
 
 def tools_done_node(state: ChatState):
     warnings_input = []
-    print("state['messages']-> ",state["messages"])
+    detected_items = {}
+    print("state['messages']-> ", state["messages"])
+    
     # Find the latest tool message
     for msg in reversed(state["messages"]):
         if isinstance(msg, ToolMessage) and msg.name == "recognize_products":
-            payload = json.loads(msg.content)
-            detected_items = payload["data"]["products_count"]
-            products = payload["data"]["products_count"]
-
-            for category, qty in products.items():
-                threshold = WARNING_THRESHOLDS.get(category)
-                if threshold is not None and qty > threshold:
-                    warnings_input.append({
-                        "category": category,
-                        "quantity": qty
-                    })
+            try:
+                payload = json.loads(msg.content)
+                
+                # Check if we have a successful response with data
+                if payload.get("status") == "success" and "data" in payload:
+                    data = payload["data"]
+                    
+                    # Handle different data structures
+                    if isinstance(data, dict):
+                        # Check for products_count key
+                        if "products_count" in data:
+                            detected_items = data["products_count"]
+                        # Or maybe the data itself is the products count
+                        elif all(isinstance(v, (int, float)) for v in data.values()):
+                            detected_items = data
+                        else:
+                            detected_items = data
+                    
+                    products = detected_items if isinstance(detected_items, dict) else {}
+                    
+                    for category, qty in products.items():
+                        if isinstance(qty, (int, float)):
+                            threshold = WARNING_THRESHOLDS.get(category)
+                            if threshold is not None and qty > threshold:
+                                warnings_input.append({
+                                    "category": category,
+                                    "quantity": int(qty)
+                                })
+                elif payload.get("status") == "error":
+                    print(f"Tool returned error: {payload.get('message', 'Unknown error')}")
+                    
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                print(f"Error parsing tool message: {e}")
             break
-    print("warnings_input is -> ",warnings_input)
+    
+    print("warnings_input is -> ", warnings_input)
     return {
         "tools_done": True,
         "detected_items": detected_items, 

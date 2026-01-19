@@ -40,10 +40,27 @@ def init_db():
                     user_id UUID PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
+                    name TEXT DEFAULT '',
                     address TEXT NOT NULL,
                     pincode INT NOT NULL,
+                    age INT DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            
+            # Add name and age columns if they don't exist (migration for existing tables)
+            cur.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='users' AND column_name='name') THEN
+                        ALTER TABLE users ADD COLUMN name TEXT DEFAULT '';
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='users' AND column_name='age') THEN
+                        ALTER TABLE users ADD COLUMN age INT DEFAULT 0;
+                    END IF;
+                END $$;
             """)
 
             cur.execute("""
@@ -154,7 +171,7 @@ def is_waiting_for_review(thread_id: str) -> bool:
             
             return bool(row[0])
 
-def create_user(email: str, password: str, address: str, pincode: int):
+def create_user(email: str, password: str, name: str, age: int, address: str, pincode: int):
     user_id = str(uuid.uuid4())
     pwd_plain = password  # no hashing
 
@@ -162,10 +179,10 @@ def create_user(email: str, password: str, address: str, pincode: int):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (user_id, email, password_hash, address, pincode)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (user_id, email, password_hash, name, age, address, pincode)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (user_id, email, pwd_plain, address, pincode)
+                (user_id, email, pwd_plain, name, age, address, pincode)
             )
             conn.commit()
 
@@ -177,7 +194,7 @@ def get_user_by_email(email: str):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT user_id, email, password_hash
+                SELECT user_id, email, password_hash, name
                 FROM users
                 WHERE email = %s
                 """,
@@ -192,7 +209,7 @@ def authenticate_user(email: str, password: str):
     if not row:
         return None
 
-    user_id, email, stored_password = row
+    user_id, email, stored_password, name = row
 
     # plain-text comparison
     if password != stored_password:
@@ -200,7 +217,8 @@ def authenticate_user(email: str, password: str):
 
     return {
         "user_id": str(user_id),
-        "email": email
+        "email": email,
+        "name": name or email.split('@')[0]  # Fallback to email prefix if no name
     }
 
 def create_order(user_id: str, products: dict):

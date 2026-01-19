@@ -78,34 +78,63 @@ def build_prompt(user_input: str, images_list: Optional[List[str]] = None, threa
 
 def validate_request(state: GaurdrailState):
     prompt="""
-            Role: You are a request validator for an chatbot.
+            Role: You are a request validator for a Retail Checkout Assistant chatbot.
             
             Task:
-            Determine whether the user’s request is allowed based on the approved topics listed below.
+            Determine whether the user's request is allowed based on the approved topics listed below.
             Only evaluate intent and subject matter of the request. Do not answer the request itself.
 
             Allowed Topics (the request must be primarily about one or more of these):
 
-            Retail images
-            Images of stores, shelves, aisles, refrigerators, displays, or product arrangements.
-            Shelf count
-            Counting shelves, racks, rows, or display levels in a retail image.
-            Product count
-            Counting how many products, items, units, or packages appear in a retail image.
-            Product names inside an image
-            Identifying or listing visible product names or brands shown in a retail image.
-            Product nutrition
-            Nutrition-related information (e.g., calories, ingredients, macros, nutrition labels) for products shown or referenced in a retail image.
+            1. General Greetings & Conversational Messages
+               - Greetings like "hi", "hello", "good morning", "good evening", "hey", "thanks", "thank you", "bye", "goodbye"
+               - Polite acknowledgments, small talk, or casual conversation starters
+               - Questions about the assistant's capabilities or what it can do
+               - Requests for help or assistance
+
+            2. Retail Images Analysis
+               - Images of stores, shelves, aisles, refrigerators, displays, or product arrangements
+               - Requests to analyze, process, or understand retail/store images
+
+            3. Shelf Detection & Count
+               - Detecting shelves in images
+               - Counting shelves, racks, rows, or display levels in a retail image
+
+            4. Product Detection & Count
+               - Detecting products in retail images
+               - Counting how many products, items, units, or packages appear in a retail image
+
+            5. Empty Space Calculation
+               - Calculating empty shelf space percentage
+               - Analyzing shelf occupancy or availability
+               - Finding gaps or empty areas on shelves
+
+            6. Product Recognition & Names
+               - Identifying or listing visible product names or brands shown in a retail image
+               - Recognizing specific products or SKUs
+
+            7. Product Nutrition Information
+               - Nutrition-related information (e.g., calories, ingredients, macros, nutrition labels) for products shown or referenced in a retail image
+
+            8. Order-Related Tasks
+               - Creating an order, placing an order
+               - Updating an order, modifying cart items
+               - Summarizing an order, reviewing cart contents
+               - Extracting order details from an image or conversation
+               - Confirming orders, checkout assistance
+               - Any task related to ordering or purchasing products
 
             Disallowed Topics (examples):
 
-            Requests unrelated to retail or store images
-            Price prediction, demand forecasting, or sales strategy
-            Customer behavior analysis
-            Personal data or facial recognition
-            Medical, legal, or financial advice
-            Image manipulation or image generation
-            Any topic not clearly connected to the allowed list above
+            - Requests completely unrelated to retail, products, or store images
+            - Price prediction, demand forecasting, or sales strategy
+            - Customer behavior analysis or market research
+            - Personal data extraction or facial recognition
+            - Medical, legal, or financial advice
+            - Image manipulation, editing, or image generation
+            - Coding, programming, or technical development questions
+            - Political, religious, or controversial topics
+            - Any topic not clearly connected to the allowed list above
 
             Output Format (STRICT)
 
@@ -120,14 +149,16 @@ def validate_request(state: GaurdrailState):
             If disallowed:
             {
             "allowed": false,
-            "reason": "The request is not related to retail images, shelf count, product count, product names, or product nutrition."
+            "reason": "The request is not related to retail checkout assistance. I can help with: analyzing retail images, detecting shelves/products, calculating empty space, recognizing products, product nutrition info, or creating orders."
             }
 
-            Validation Rules
-            If the request clearly matches at least one allowed topic, mark it as allowed.
-            If the request is ambiguous, but reasonably related to retail images or products, mark it as allowed.
-            If the request does not match any allowed topic, mark it as disallowed.
-            Do not infer hidden intent beyond what is stated.
+            Validation Rules:
+            1. General greetings and polite messages should ALWAYS be allowed.
+            2. If the request clearly matches at least one allowed topic, mark it as allowed.
+            3. If the request is ambiguous but reasonably related to retail, products, images, or orders, mark it as allowed.
+            4. If the request does not match any allowed topic, mark it as disallowed.
+            5. Do not infer hidden intent beyond what is stated.
+            6. When in doubt about retail-related queries, lean towards allowing them.
         """
     validator_model = llm.with_structured_output(ValidatorSchema)
     response = validator_model.invoke([
