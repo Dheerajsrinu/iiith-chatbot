@@ -16,7 +16,8 @@ import json
 from ast import literal_eval
 from datetime import datetime
 from dotenv import load_dotenv
-from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order
+from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance
+import time
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
 
@@ -87,8 +88,8 @@ def count_tokens_and_log(messages, tools):
     print(f"  📝 Message tokens: {message_tokens}")
     print(f"  🔧 Tool tokens: {tool_tokens}")
     print(f"  📊 Total tokens: {total_tokens}")
-    print(f"  ⚠️  Limit: 16,385 tokens")
-    print(f"  {'❌ OVER LIMIT' if total_tokens > 16385 else '✅ Within limit'}")
+    print(f"  Limit: 16,385 tokens")
+    print(f"  {'OVER LIMIT' if total_tokens > 16385 else 'Within limit'}")
     print(f"  📄 Detailed analysis saved to: {debug_file}")
     
     return total_tokens
@@ -154,7 +155,7 @@ You must produce a response with EXACTLY this structure:
 
 - <Category> × <Quantity>
 
-⚠️ **Health Warnings** \n\n
+**Health Warnings** \n\n
 <only include items that need warnings>
 - <Category> (<Quantity>): <warning text>
 
@@ -195,7 +196,28 @@ Items requiring health warnings:
             )
         )
 
+    # Track LLM performance
+    llm_start_time = time.time()
     response = llm.bind_tools(tools_list).invoke(messages)
+    llm_end_time = time.time()
+    
+    # Log LLM performance
+    llm_duration_ms = (llm_end_time - llm_start_time) * 1000
+    try:
+        log_model_performance(
+            model_name="gpt_llm",
+            duration_ms=llm_duration_ms,
+            operation="chat_completion",
+            input_size=str(len(messages)),
+            thread_id=state.get("thread_id"),
+            metadata={
+                "model": "gpt-5-nano",
+                "message_count": len(messages),
+                "has_tools": True
+            }
+        )
+    except Exception as e:
+        print(f"Failed to log LLM performance: {e}")
 
     return {
         "messages": [response],
@@ -234,7 +256,7 @@ def approved_node(state: ChatState):
     print("approved")
     return {
         "messages": [
-            AIMessage(content="✅ Approved.")
+            AIMessage(content="Order Approved.")
         ],
         "tools_done": False
     }
@@ -242,7 +264,7 @@ def approved_node(state: ChatState):
 def rejected_node(state: ChatState):
     return {
         "messages": [
-            AIMessage(content="❌ Cancelled.")
+            AIMessage(content="Order Cancelled.")
         ],
         "tools_done": False
     }

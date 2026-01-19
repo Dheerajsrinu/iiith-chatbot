@@ -1,11 +1,13 @@
 import streamlit as st
 import uuid
+import time
 
 from app.backend.db import (
     init_db,
     create_thread,
     get_messages_by_thread,
-    get_threads_by_user
+    get_threads_by_user,
+    log_telemetry_event
 )
 from app.backend.chat_service import run_chat_stream
 from app.backend.model_loader import load_models
@@ -23,8 +25,12 @@ from app.ui.styles import (
     render_user_profile_bottom, 
     render_header_compact,
     render_image_preview_card,
+    get_cart_avatar,
     COLORS
 )
+
+# Cart avatar for assistant messages
+ASSISTANT_AVATAR = get_cart_avatar()
 
 # -------------------------------------------------
 # Page config
@@ -84,9 +90,14 @@ with st.sidebar:
     # ----- Navigation -----
     st.markdown("##### Navigation")
     
-    # Only show Orders button (we're already on Chat page)
-    if st.button("📦  My Orders", use_container_width=True, key="nav_orders"):
+    # My Orders button
+    if st.button("My Orders", use_container_width=True, key="nav_orders"):
         st.switch_page("pages/orders_dashboard.py")
+    
+    # Manager Dashboard (only for store managers)
+    if st.session_state.get("user_role") == "store_manager":
+        if st.button("Manager Dashboard", use_container_width=True, key="nav_manager"):
+            st.switch_page("pages/manager_dashboard.py")
     
     st.divider()
     
@@ -97,7 +108,7 @@ with st.sidebar:
     threads = get_threads_by_user(user_id)
     
     # New chat button
-    if st.button("➕ New Chat", use_container_width=True, type="primary"):
+    if st.button("New Chat", use_container_width=True, type="primary"):
         count = len(threads) if threads else 0
         thread_id = create_thread(user_id=user_id, title=f"Chat {count + 1}")
         st.session_state.thread_id = thread_id
@@ -106,33 +117,36 @@ with st.sidebar:
         st.session_state.show_image_confirm = False
         st.rerun()
     
-    # Thread list
-    if threads:
-        for thread_id, title, db_user_id in threads:
-            if user_id == db_user_id:
-                is_active = st.session_state.get("thread_id") == str(thread_id)
-                icon = "🟢" if is_active else "💬"
-                
-                if st.button(f"{icon} {title or 'Untitled'}", key=str(thread_id), use_container_width=True):
-                    st.session_state.thread_id = str(thread_id)
-                    st.session_state.pending_images = []
-                    st.session_state.confirmed_images = []
-                    st.session_state.show_image_confirm = False
-                    st.rerun()
-    else:
-        st.caption("No conversations yet")
+    # Thread list in scrollable container
+    thread_container = st.container(height=250)
+    with thread_container:
+        if threads:
+            for thread_id, title, db_user_id in threads:
+                if user_id == db_user_id:
+                    is_active = st.session_state.get("thread_id") == str(thread_id)
+                    label = f"• {title or 'Untitled'}" if is_active else title or 'Untitled'
+                    
+                    if st.button(label, key=str(thread_id), use_container_width=True):
+                        st.session_state.thread_id = str(thread_id)
+                        st.session_state.pending_images = []
+                        st.session_state.confirmed_images = []
+                        st.session_state.show_image_confirm = False
+                        st.rerun()
+        else:
+            st.caption("No conversations yet")
     
-    # Spacer to push user profile to bottom
-    st.markdown('<div style="flex: 1; min-height: 100px;"></div>', unsafe_allow_html=True)
+    # ----- Spacer to push bottom section down -----
+    st.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
     
-    st.divider()
+    # ----- Fixed Bottom Section -----
+    st.markdown("---")  # Divider
     
-    # Logout button
-    if st.button("🚪 Sign Out", use_container_width=True, key="logout"):
+    # Logout button (fixed position)
+    if st.button("Sign Out", use_container_width=True, key="logout"):
         st.session_state.clear()
         st.rerun()
     
-    # User profile at bottom
+    # User profile at bottom (fixed position)
     user_email = st.session_state.get("user_email", "User")
     render_user_profile_bottom(user_email)
 
@@ -151,7 +165,20 @@ if "thread_id" not in st.session_state:
         border-radius: 16px;
         margin: 1rem 0;
     ">
-        <div style="font-size: 3.5rem; margin-bottom: 0.75rem;">🛒</div>
+        <div style="
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, #1a365d 0%, #2c5282 100%);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        ">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 3H5L5.4 5M7 13H17L21 5H5.4M7 13L5.4 5M7 13L4.707 15.293C4.077 15.923 4.523 17 5.414 17H17M17 17C15.895 17 15 17.895 15 19C15 20.105 15.895 21 17 21C18.105 21 19 20.105 19 19C19 17.895 18.105 17 17 17ZM9 19C9 20.105 8.105 21 7 21C5.895 21 5 20.105 5 19C5 17.895 5.895 17 7 17C8.105 17 9 17.895 9 19Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </div>
         <h2 style="color: #1a365d; margin-bottom: 0.75rem; font-size: 1.5rem;">Start Your Retail Analysis</h2>
         <p style="color: #718096; font-size: 1rem; max-width: 450px; margin: 0 auto;">
             Upload shelf images to detect products, count items, and analyze inventory using AI.
@@ -160,18 +187,18 @@ if "thread_id" not in st.session_state:
     """, unsafe_allow_html=True)
     
     # Feature cards
-    st.markdown("##### What I can help you with")
+    st.markdown("##### Capabilities")
     
     col1, col2, col3, col4 = st.columns(4)
     
     features = [
-        ("🔍", "Detect Shelves", "Identify shelf structures"),
-        ("📦", "Count Products", "Count product objects"),
-        ("📊", "Empty Space", "Calculate empty %"),
-        ("🏷️", "Recognize", "Identify products"),
+        ("Detect Shelves", "Identify shelf structures in images"),
+        ("Count Products", "Count product objects on shelves"),
+        ("Empty Space", "Calculate empty shelf percentage"),
+        ("Recognize Items", "Identify specific products"),
     ]
     
-    for col, (icon, title, desc) in zip([col1, col2, col3, col4], features):
+    for col, (title, desc) in zip([col1, col2, col3, col4], features):
         with col:
             st.markdown(f"""
             <div style="
@@ -182,14 +209,13 @@ if "thread_id" not in st.session_state:
                 border: 1px solid #e2e8f0;
                 height: 100%;
             ">
-                <div style="font-size: 1.75rem; margin-bottom: 0.25rem;">{icon}</div>
-                <div style="font-weight: 600; color: #1a365d; font-size: 0.9rem;">{title}</div>
+                <div style="font-weight: 600; color: #1a365d; font-size: 0.9rem; margin-bottom: 0.25rem;">{title}</div>
                 <div style="font-size: 0.75rem; color: #718096;">{desc}</div>
             </div>
             """, unsafe_allow_html=True)
     
     st.markdown("")
-    st.info("👈 **Start a new chat** from the sidebar to begin!")
+    st.info("Start a new chat from the sidebar to begin!")
     st.stop()
 
 # -------------------------------------------------
@@ -205,7 +231,7 @@ messages = get_messages_by_thread(st.session_state.thread_id)
 chat_container = st.container()
 with chat_container:
     for role, content in messages:
-        with st.chat_message(role, avatar="🧑‍💼" if role == "user" else "🤖"):
+        with st.chat_message(role, avatar="👤" if role == "user" else ASSISTANT_AVATAR):
             st.markdown(content)
 
 # -------------------------------------------------
@@ -219,8 +245,8 @@ if "awaiting_interrupt" not in st.session_state:
 
 # Show interrupt message if awaiting
 if st.session_state.awaiting_interrupt:
-    with st.chat_message("assistant", avatar="🤖"):
-        st.warning(f"⚠️ **Action Required:** {st.session_state.pending_interrupt}")
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        st.warning(f"**Action Required:** {st.session_state.pending_interrupt}")
         st.caption("Please respond to continue...")
 
 # -------------------------------------------------
@@ -234,7 +260,7 @@ if not st.session_state.awaiting_interrupt:
 
     with upload_col:
         uploaded_images = st.file_uploader(
-            "📎 Attach Images",
+            "Attach Images",
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True,
             key=f"image_uploader_{st.session_state.uploader_key}",
@@ -250,7 +276,7 @@ if not st.session_state.awaiting_interrupt:
     # Show image preview and confirmation
     if st.session_state.show_image_confirm and st.session_state.pending_images:
         st.markdown("---")
-        st.markdown("##### 📷 Image Preview")
+        st.markdown("##### Image Preview")
         st.caption("Review attached images before sending your message")
         
         # Image preview grid
@@ -260,7 +286,7 @@ if not st.session_state.awaiting_interrupt:
         for idx, img in enumerate(st.session_state.pending_images[:4]):
             with cols[idx % 4]:
                 st.image(img, use_container_width=True)
-                st.caption(f"📄 {img.name}")
+                st.caption(img.name)
         
         if num_images > 4:
             st.caption(f"...and {num_images - 4} more image(s)")
@@ -269,13 +295,13 @@ if not st.session_state.awaiting_interrupt:
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            if st.button("✅ Confirm", type="primary", use_container_width=True):
+            if st.button("Confirm", type="primary", use_container_width=True):
                 st.session_state.confirmed_images = st.session_state.pending_images
                 st.session_state.show_image_confirm = False
                 st.rerun()
         
         with col2:
-            if st.button("❌ Clear", use_container_width=True):
+            if st.button("Clear", use_container_width=True):
                 st.session_state.pending_images = []
                 st.session_state.confirmed_images = []
                 st.session_state.show_image_confirm = False
@@ -306,6 +332,7 @@ if "seen_message_ids" not in st.session_state:
 if user_input:
     image_paths = []
     user_message_parts = []
+    transaction_start = time.time()
     
     if st.session_state.awaiting_interrupt:
         st.session_state.awaiting_interrupt = False
@@ -324,8 +351,8 @@ if user_input:
         image_paths = save_images(image_bytes, filenames)
         
         user_message_parts.append(
-            "📎 **Attached images:**\n"
-            + "\n".join([f"- `{name}`" for name in filenames])
+            "**Attached images:**\n"
+            + "\n".join([f"- {name}" for name in filenames])
         )
 
     user_message_parts.append(user_input)
@@ -334,23 +361,23 @@ if user_input:
     # -----------------------------
     # User message bubble
     # -----------------------------
-    with st.chat_message("user", avatar="🧑‍💼"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(full_user_message)
 
     # -----------------------------
     # Assistant streaming + tools (with loader)
     # -----------------------------
-    with st.chat_message("assistant", avatar="🤖"):
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         
         def ai_stream():
             thread_id = st.session_state.thread_id
             is_review = is_waiting_for_review(thread_id)
 
             # -----------------------------------
-            # 🔁 RESUME FROM INTERRUPT
+            # RESUME FROM INTERRUPT
             # -----------------------------------
             if is_review:
-                with st.chat_message("user", avatar="🧑‍💼"):
+                with st.chat_message("user", avatar="👤"):
                     st.write(user_input)
 
                 save_message(
@@ -372,7 +399,7 @@ if user_input:
                 )
 
             # -----------------------------------
-            # ▶️ NORMAL FLOW
+            # NORMAL FLOW
             # -----------------------------------
             else:
                 stream = run_chat_stream(
@@ -385,7 +412,7 @@ if user_input:
             # STREAM HANDLING
             # -----------------------------------
             for event in stream:
-                # ⛔ INTERRUPT
+                # INTERRUPT
                 if "__interrupt__" in event:
                     interrupt_obj = event["__interrupt__"][0]
                     question = interrupt_obj.value.get("question", "")
@@ -393,7 +420,7 @@ if user_input:
                     st.session_state.awaiting_interrupt = True
                     return
 
-                # 🧠 MESSAGES
+                # MESSAGES
                 if "messages" in event:
                     for msg in event["messages"]:
                         if msg.id in st.session_state.seen_message_ids:
@@ -401,20 +428,20 @@ if user_input:
 
                         st.session_state.seen_message_ids.add(msg.id)
 
-                        # 🔧 Tool message - Show loading status
+                        # Tool message - Show loading status
                         if isinstance(msg, ToolMessage):
                             tool_name = getattr(msg, "name", "tool")
-                            with st.status(f"🔧 Running `{tool_name}`...", expanded=True) as status:
+                            with st.status(f"Running {tool_name}...", expanded=True) as status:
                                 st.write(f"Analyzing with **{tool_name}**...")
                                 st.write("This may take a moment...")
-                                status.update(label=f"✅ `{tool_name}` complete", state="complete", expanded=False)
+                                status.update(label=f"{tool_name} complete", state="complete", expanded=False)
 
-                        # 🤖 Assistant message
+                        # Assistant message
                         elif isinstance(msg, AIMessage):
                             yield msg.content
 
         # Show processing indicator
-        with st.spinner("🔄 Processing your request..."):
+        with st.spinner("Processing your request..."):
             assistant_text = st.write_stream(ai_stream())
 
     # -----------------------------
@@ -426,6 +453,23 @@ if user_input:
             "assistant",
             assistant_text
         )
+    
+    # Log transaction telemetry
+    transaction_duration = (time.time() - transaction_start) * 1000
+    try:
+        log_telemetry_event(
+            event_type='transaction_complete',
+            user_id=st.session_state.user_id,
+            user_email=st.session_state.get('user_email'),
+            user_role=st.session_state.get('user_role'),
+            metadata={
+                'duration_ms': transaction_duration,
+                'has_images': len(image_paths) > 0,
+                'thread_id': st.session_state.thread_id
+            }
+        )
+    except:
+        pass  # Don't fail if telemetry fails
     
     # Clear confirmed images after sending
     st.session_state.confirmed_images = []
