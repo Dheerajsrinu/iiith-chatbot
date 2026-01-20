@@ -563,3 +563,21 @@ def get_transaction_stats():
             stats['total_transactions'] = cur.fetchone()[0]
             
             return stats
+def get_user_age_by_thread(thread_id: str) -> int:
+    """Get user age from thread_id by joining chat_threads and users tables"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT u.age
+                FROM users u
+                JOIN chat_threads ct ON ct.user_id = u.user_id::text
+                WHERE ct.thread_id = %s
+                """,
+                (thread_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                return 0
+            return row[0] or 0
+
