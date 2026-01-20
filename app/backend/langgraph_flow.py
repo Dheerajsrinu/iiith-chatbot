@@ -406,7 +406,7 @@ Available product categories: {', '.join(known_products)}
 Rules:
 1. Match user's mentioned products to the closest available category (case-insensitive)
 2. Extract the quantity for each product (default to 1 if not specified)
-3. If user says "all" or "everything", return exactly: {{"all": true}}
+3. If user says "all" or "everything" or "yes", return exactly: {{"all": true}}
 4. Return ONLY a valid JSON object with product names as keys and quantities as integer values
 5. Use the exact category names from the available list (with proper capitalization)
 6. If no products are mentioned or the message is unclear, return an empty object: {{}}
@@ -686,3 +686,4 @@ def get_graph():
         _graph = graph.compile(checkpointer=_checkpointer)
 
     return _graph
+
