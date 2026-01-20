@@ -16,7 +16,7 @@ import json
 from ast import literal_eval
 from datetime import datetime
 from dotenv import load_dotenv
-from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance
+from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance, get_user_age_by_thread
 import time
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
@@ -146,36 +146,40 @@ llm = ChatOpenAI(
 #         "messages": [response],
 #         "tools_done": state.get("tools_done", False)
 #     }
-SYSTEM_HEALTH_PROMPT = """
-You are a health-aware assistant.
 
-You must produce a response with EXACTLY this structure:
-
-**Detected Items** \n\n
-
-- <Category> × <Quantity>
-
-**Health Warnings** \n\n
-<only include items that need warnings>
-- <Category> (<Quantity>): <warning text>
-
-Rules:
-- EVERY Category line MUST start with a hyphen (-)
-- Use the hyphen (-) exactly so the output can be rendered as a Streamlit list
-- Always show Detected Items
-- Only show Health Warnings if at least one exists
-- Do NOT warn for non-food items (e.g. Tissue, Stationery, Personal Hygiene)
-- Health warnings must be 1–2 sentences
-- General wellness only
-- No medical advice, diagnosis, or fear-based language
-- Mention moderation or balance
-
-Do not use bullet points.
-Do not add extra sections.
-"""
 
 def chatbot_node(state: ChatState):
     messages = state["messages"].copy()
+    thread_id = state["thread_id"]
+    print("thread id is -> ",thread_id)
+    SYSTEM_HEALTH_PROMPT = f"""
+    You are a health-aware assistant.
+
+    You must produce a response with EXACTLY this structure:
+
+    **Detected Items** \n\n
+
+    - <Category> × <Quantity>
+
+    **Health Warnings** \n\n
+    <only include items that need warnings>
+    - <Category> (<Quantity>): <warning text>
+
+    Rules:
+    - EVERY Category line MUST start with a hyphen (-)
+    - Use the hyphen (-) exactly so the output can be rendered as a Streamlit list
+    - Always show Detected Items
+    - Only show Health Warnings if at least one exists
+    - Do NOT warn for non-food items (e.g. Tissue, Stationery, Personal Hygiene)
+    - Health warnings must be 1–2 sentences
+    - General wellness only
+    - No medical advice, diagnosis, or fear-based language
+    - Mention moderation or balance
+
+    Do not use bullet points.
+    Do not add extra sections.
+
+    """
     print("\n")
     print("messages in chatbot_node -> ", messages)
     print("\n")
@@ -247,16 +251,18 @@ def review_decision_node(state: ChatState):
 
     clear_waiting_for_review(thread_id)
 
-    if last_message in ["yes", "y"]:
+    if "yes" in last_message:
         return {"decision": "approved"}
-    else:
+    elif "no" in last_message:
         return {"decision": "rejected"}
+    else:
+        return {"decision": "rejected"}  # Default to rejected if unclear
 
 def approved_node(state: ChatState):
     print("approved")
     return {
         "messages": [
-            AIMessage(content="Order Approved.")
+            AIMessage(content="Order Creation Requested .")
         ],
         "tools_done": False
     }
@@ -264,7 +270,7 @@ def approved_node(state: ChatState):
 def rejected_node(state: ChatState):
     return {
         "messages": [
-            AIMessage(content="Order Cancelled.")
+            AIMessage(content="Order Creation Cancelled.")
         ],
         "tools_done": False
     }
@@ -379,15 +385,209 @@ def preprocess_node(state: ChatState):
 
     return state
 
+def parse_user_order_request(message: str, detected_items: dict) -> dict:
+    """
+    Use LLM to parse user's free text message and extract requested products and quantities.
+    Example: "I want to order 3 bottles of alcohol and one chocolate" -> {'Alcohol': 3, 'Chocolate': 1}
+    """
+    
+    # Known product categories
+    known_products = [
+        "Alcohol", "Candy", "Canned Food", "Chocolate", "Dessert", 
+        "Dried Food", "Dried Fruit", "Drink", "Gum", "Instant Drink", 
+        "Instant Noodles", "Milk", "Personal Hygiene", "Puffed Food", 
+        "Seasoner", "Stationery", "Tissue"
+    ]
+    
+    system_prompt = f"""You are a product order parser. Extract products and quantities from the user's message.
+
+Available product categories: {', '.join(known_products)}
+
+Rules:
+1. Match user's mentioned products to the closest available category (case-insensitive)
+2. Extract the quantity for each product (default to 1 if not specified)
+3. If user says "all" or "everything", return exactly: {{"all": true}}
+4. Return ONLY a valid JSON object with product names as keys and quantities as integer values
+5. Use the exact category names from the available list (with proper capitalization)
+6. If no products are mentioned or the message is unclear, return an empty object: {{}}
+
+Examples:
+- "order 3 alcohol and 1 chocolate" -> {{"Alcohol": 3, "Chocolate": 1}}
+- "I want two desserts and 5 candies" -> {{"Dessert": 2, "Candy": 5}}
+- "give me some milk" -> {{"Milk": 1}}
+- "order all items" -> {{"all": true}}
+- "yes please" -> {{}}
+- "I'd like to get 3 beers and a sweet treat" -> {{"Alcohol": 3, "Dessert": 1}}
+
+Respond with ONLY the JSON object, no explanation."""
+
+    try:
+        # Create a simple LLM instance for parsing (low temperature for consistency)
+        parser_llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0,
+            api_key=OPENAI_API_KEY
+        )
+        
+        response = parser_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"User message: {message}")
+        ])
+        
+        # Parse the JSON response
+        response_text = response.content.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+        
+        parsed = json.loads(response_text)
+        
+        print(f"LLM parsed order: {parsed}")
+        
+        # Handle "all" case
+        if parsed.get("all") == True:
+            return detected_items.copy()
+        
+        # Ensure all values are integers
+        result = {}
+        for key, value in parsed.items():
+            if key != "all" and isinstance(value, (int, float)):
+                result[key] = int(value)
+        
+        return result
+        
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Error parsing order with LLM: {e}")
+        # Fallback: return empty dict (will use all detected items)
+        return {}
+
+def validate_order_against_detected(requested: dict, detected: dict) -> tuple[bool, str, dict]:
+    """
+    Validate that requested products don't exceed detected quantities.
+    Returns: (is_valid, error_message, validated_products)
+    """
+    validated_products = {}
+    errors = []
+    
+    # Create lowercase mapping for case-insensitive comparison
+    detected_lower = {k.lower(): (k, v) for k, v in detected.items()}
+    
+    for product, requested_qty in requested.items():
+        product_lower = product.lower()
+        
+        if product_lower not in detected_lower:
+            errors.append(f"'{product}' was not detected in the image")
+            continue
+        
+        original_name, available_qty = detected_lower[product_lower]
+        
+        if requested_qty > available_qty:
+            errors.append(f"'{original_name}': requested {requested_qty}, but only {available_qty} detected")
+        else:
+            validated_products[original_name] = requested_qty
+    
+    if errors:
+        return False, "\n".join(errors), validated_products
+    
+    return True, "", validated_products
+
+
 def create_order_node(state: ChatState):
-    detected_items = state["detected_items"]
-    user_id = state["thread_id"]
-    print("\n","detected_items are -> ", detected_items, "\n")
-    print("\n","user_id is -> ", user_id, "\n")
-    order_id = create_order(user_id=user_id, products=detected_items)
+    detected_items = state.get("detected_items", {})
+    thread_id = state["thread_id"]
+    
+    # Get the user's order request message (the message before the confirmation)
+    # We need to find the message where user specified what they want to order
+    user_order_message = ""
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage):
+            content = msg.content.lower().strip()
+            # Skip confirmation messages (yes/no)
+            if content not in ['yes', 'no', 'y', 'n']:
+                user_order_message = msg.content
+                break
+    
+    print("\n", "detected_items are -> ", detected_items, "\n")
+    print("\n", "thread_id is -> ", thread_id, "\n")
+    print("User order message is -> ", user_order_message)
+    
+    # If no detected items, cannot create order
+    if not detected_items:
+        return {
+            "messages": [
+                AIMessage(content="❌ Order creation failed. No products were detected from the image.")
+            ]
+        }
+    
+    # Parse user's requested products from their message
+    requested_products = parse_user_order_request(user_order_message, detected_items)
+    
+    print("\n", "requested_products are -> ", requested_products, "\n")
+    
+    # If no specific products requested, use all detected items
+    if not requested_products:
+        requested_products = detected_items.copy()
+        print("No specific products parsed, using all detected items")
+    
+    # Validate requested products against detected items
+    is_valid, error_message, validated_products = validate_order_against_detected(
+        requested_products, detected_items
+    )
+    
+    if not is_valid:
+        return {
+            "messages": [
+                AIMessage(content=f"❌ Order creation cancelled. You have requested more products than detected:\n{error_message}\n\nPlease adjust your order quantities.")
+            ]
+        }
+    
+    if not validated_products:
+        return {
+            "messages": [
+                AIMessage(content="❌ Order creation cancelled. No valid products found in your request.")
+            ]
+        }
+    
+    # Check if alcohol is in requested products and user is a minor
+    alcohol_quantity = 0
+    for item_name, qty in validated_products.items():
+        if item_name.lower() == "alcohol":
+            alcohol_quantity = qty
+            break
+    
+    if alcohol_quantity > 0:
+        user_age = get_user_age_by_thread(thread_id)
+        print("\n", "user_age is -> ", user_age, "\n")
+        if user_age < 21:
+            # Remove alcohol from the order but allow other items
+            validated_products = {k: v for k, v in validated_products.items() if k.lower() != "alcohol"}
+            if not validated_products:
+                return {
+                    "messages": [
+                        AIMessage(content="❌ Order creation failed. Alcohol cannot be sold to minors (under 21 years old), and no other products were requested.")
+                    ]
+                }
+            else:
+                # Create order without alcohol
+                order_id = create_order(user_id=thread_id, products=validated_products)
+                return {
+                    "messages": [
+                        AIMessage(content=f"⚠️ Alcohol removed from order (not available for customers under 21).\n\n✅ Order created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
+                                  "\n".join([f"- {name}: {qty}" for name, qty in validated_products.items()]))
+                    ]
+                }
+    
+    # Create the order with validated products
+    order_id = create_order(user_id=thread_id, products=validated_products)
+    
     return {
         "messages": [
-            AIMessage(content=f" Order creation successfully with order_id {order_id}.")
+            AIMessage(content=f"✅ Order created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
+                      "\n".join([f"- {name}: {qty}" for name, qty in validated_products.items()]))
         ]
     }
 
