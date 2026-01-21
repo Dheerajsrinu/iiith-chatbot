@@ -14,6 +14,7 @@ class ChatState(TypedDict):
     tools_done: bool
     health_warning_input: List[HealthWarningItem]
     detected_items: Optional[Dict[str, int]]
+    user_role: Optional[str]  # 'customer' or 'store_manager'
 
 class GaurdrailState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]

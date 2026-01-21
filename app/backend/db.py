@@ -581,3 +581,20 @@ def get_user_age_by_thread(thread_id: str) -> int:
                 return 0
             return row[0] or 0
 
+def get_user_role_by_thread(thread_id: str) -> str:
+    """Get user role from thread_id by joining chat_threads and users tables"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT u.role
+                FROM users u
+                JOIN chat_threads ct ON ct.user_id = u.user_id::text
+                WHERE ct.thread_id = %s
+                """,
+                (thread_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                return "customer"
+            return row[0] or "customer"

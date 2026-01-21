@@ -121,7 +121,7 @@ def run_chat_stream(
 
     # RESUME PATH — BYPASS VALIDATOR COMPLETELY
     if command and command.resume:
-        print("🔁 RESUMING CHAT GRAPH")
+        print("[RESUME] Resuming chat graph")
         chat_graph = get_graph()
 
         for event in chat_graph.stream(
@@ -151,7 +151,7 @@ def run_chat_stream(
         print("event is ", event)
 
         if "__delegate__" in event:
-            print("➡️ delegating to chat graph")
+            print("[DELEGATE] Delegating to chat graph")
             chat_graph = get_graph()
 
             for chat_event in chat_graph.stream(

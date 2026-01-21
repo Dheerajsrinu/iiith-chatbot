@@ -59,6 +59,12 @@ if "user_id" not in st.session_state:
 # -------------------------------------------------
 load_models()
 
+# Verify models are loaded (for debugging)
+from app import model_store
+if model_store.product_rec_model is None:
+    st.error("Product recognition model failed to load. Please check the model files and restart the app.")
+    print("ERROR: product_rec_model is None after load_models()")
+
 # -------------------------------------------------
 # Init DB
 # -------------------------------------------------
@@ -254,8 +260,8 @@ if "awaiting_interrupt" not in st.session_state:
 # Show interrupt message if awaiting
 if st.session_state.awaiting_interrupt:
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
-        st.warning(f"**Action Required:** {st.session_state.pending_interrupt}")
-        st.caption("Please respond to continue...")
+        st.info(f"**Confirmation Required**\n\n{st.session_state.pending_interrupt}")
+        st.caption("Type your response below to continue.")
 
 # -------------------------------------------------
 # Image Upload & Preview Section (Hidden during interrupt)
@@ -373,6 +379,11 @@ if user_input:
     # Assistant streaming + tools (with loader)
     # -----------------------------
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        # Show thinking indicator while waiting for first response
+        thinking_placeholder = st.empty()
+        thinking_placeholder.markdown("*Thinking...*")
+        # Use a list to track state (avoids nonlocal issues)
+        response_state = {"received": False}
         
         def ai_stream():
             thread_id = st.session_state.thread_id
@@ -445,35 +456,68 @@ if user_input:
 
                         # ---- TOOL MESSAGE ----
                         if isinstance(msg, ToolMessage):
+                            # Clear thinking indicator when tools start
+                            if not response_state["received"]:
+                                response_state["received"] = True
+                                thinking_placeholder.empty()
+                            
                             tool_name = getattr(msg, "name", "tool")
 
-                            # capture tool output
+                            # Parse tool output - try to extract message from JSON
                             tool_output = msg.content or ""
-                            if tool_output.strip():
-                                final_response += tool_output + "\n"
+                            display_output = ""
+                            
+                            try:
+                                import json
+                                tool_result = json.loads(tool_output)
+                                # For direct orders, show the message directly
+                                if tool_name == "place_direct_order" and "message" in tool_result:
+                                    display_output = tool_result["message"]
+                                    final_response = display_output + "\n\n"  # Replace, not append
+                                    response_state["direct_order_done"] = True  # Flag to skip LLM's follow-up
+                                    yield display_output + "\n\n"
+                            except (json.JSONDecodeError, TypeError):
+                                # Not JSON, use raw output
+                                if tool_output.strip():
+                                    final_response += tool_output + "\n"
 
-                            # show progress UI
-                            with st.status(f"Running {tool_name}...", expanded=True) as status:
-                                st.write(f"Analyzing with **{tool_name}**...")
-                                st.write("This may take a moment...")
-                                status.update(
-                                    label=f"{tool_name} complete",
-                                    state="complete",
-                                    expanded=False
-                                )
+                            # show progress UI (skip for direct orders since we already showed result)
+                            if tool_name != "place_direct_order":
+                                with st.status(f"Running {tool_name}...", expanded=True) as status:
+                                    st.write(f"Analyzing with **{tool_name}**...")
+                                    st.write("This may take a moment...")
+                                    status.update(
+                                        label=f"{tool_name} complete",
+                                        state="complete",
+                                        expanded=False
+                                    )
 
                         # ---- ASSISTANT MESSAGE ----
                         elif isinstance(msg, AIMessage):
-                            final_response += msg.content      # <-- capture full response
-                            yield msg.content                  # <-- stream to UI
+                            # Clear thinking indicator on first response
+                            if not response_state["received"]:
+                                response_state["received"] = True
+                                thinking_placeholder.empty()
+                            
+                            # Skip empty messages or messages that just acknowledge tool calls
+                            content = msg.content.strip() if msg.content else ""
+                            if not content:
+                                continue
+                                
+                            # If we already have a response from direct order, skip LLM's additional response
+                            if response_state.get("direct_order_done"):
+                                continue
+                            
+                            final_response += content + "\n\n"  # Add spacing
+                            yield content + "\n\n"              # Stream to UI
 
             return final_response
 
-
-        # # Show processing indicator
-        # with st.spinner("Processing your request..."):
-        #     assistant_text = st.write_stream(ai_stream())
+        # Stream the response
         final_response = st.write_stream(ai_stream())
+        
+        # Ensure thinking placeholder is cleared even if no message received
+        thinking_placeholder.empty()
 
     # -----------------------------
     # Persist final assistant message

@@ -55,19 +55,19 @@ def build_prompt(user_input: str, images_list: Optional[List[str]] = None, threa
             """.strip()
         )
 
-        prompt_parts.append(
-            f"""
-            TOOLS_INPUTS:
-            For Any Tool which requires request_id you can use the following id
+    # 3. Always include user_id for tools that need it
+    prompt_parts.append(
+        f"""
+        USER_CONTEXT:
+        For any tool that requires user_id or request_id, use: {thread_id}
+        """.strip()
+    )
 
-            id - {thread_id}
-            """.strip()
-        )
-
-    # 3. Tool instruction hint (optional but recommended)
+    # 4. Tool instruction hint
     prompt_parts.append(
         """
         INSTRUCTIONS:
+        - If the user wants to place a direct order (e.g., "order 2 candy", "buy 5 chocolates"), use the place_direct_order tool.
         - If image understanding is required, use the IMAGE_INPUTS.
         - If no images are relevant, answer using text only.
         - Do not assume image content unless explicitly provided.
@@ -247,17 +247,34 @@ def review_router(state: GaurdrailState) -> str:
 
 def validator_approved_node(state: GaurdrailState):
     print("approved")
+    
+    # Show appropriate processing message based on request type
+    images_list = state.get("images_list", [])
+    user_input = state.get("user_input", "").lower()
+    
+    if images_list and len(images_list) > 0:
+        message = "Processing your request. Please wait while I analyze the image...\n\n"
+    elif any(keyword in user_input for keyword in ["order", "buy", "purchase", "add"]):
+        # Direct order request
+        message = "Processing your order...\n\n"
+    elif any(keyword in user_input for keyword in ["search", "find", "look"]):
+        # Search request
+        message = "Searching...\n\n"
+    else:
+        # General request - show brief processing message
+        message = ""
+    
     return {
         **state,
         "messages": [
-            AIMessage(content="Validation Approved. Proceeding with the process.\n\n")
-        ]
+            AIMessage(content=message)
+        ] if message else []
     }
 
 def validator_rejected_node(state: GaurdrailState):
     return {
         "messages": [
-            AIMessage(content="Validation rejected. Please ask something related to retail products or product details.")
+            AIMessage(content="I can help you with product recognition, shelf analysis, and order management. Please upload a retail image or ask about products to get started.")
         ]
     }
 
