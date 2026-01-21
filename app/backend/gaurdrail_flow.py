@@ -190,7 +190,8 @@ def process_flow(state: GaurdrailState):
 
         prompt = build_prompt(
             user_input=user_input,
-            images_list=images_list
+            images_list=images_list,
+            thread_id=thread_id
         )
     else:
         user_input = command.update["messages"][0].content

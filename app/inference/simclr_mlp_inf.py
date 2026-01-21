@@ -107,6 +107,7 @@ class ProductRecognitionInference():
         return result
 
     def compare_results(self, arr1, arr2):
+
         map1 = self.array_to_map(arr1)
         map2 = self.array_to_map(arr2)
 
@@ -117,7 +118,13 @@ class ProductRecognitionInference():
                 a = map1[image_path]
                 b = map2[image_path]
 
-                winner = a if a["confidence"] >= b["confidence"] else b
+                # NEW RULE:
+                # If arr1 confidence > 25, always choose arr1
+                if a["confidence"] > 25:
+                    winner = a
+                else:
+                    # Otherwise, choose the one with highest confidence
+                    winner = a if a["confidence"] >= b["confidence"] else b
 
                 output.append({
                     "image_path": image_path,
@@ -144,7 +151,7 @@ class ProductRecognitionInference():
         ]
 
         # Load models
-        encoder = self.load_encoder("models/simclr_checkpoints_finetuned/simclr_epoch_100.pth", device)
+        encoder = self.load_encoder("C:/Users/satyasrp/personal/projects/aiml/image/functionalities/interactive_app/models/simclr_checkpoints_finetuned/simclr_epoch_100.pth", device)
         mlp = self.load_mlp4("models/mlp_4_eval_out/mlp4_classifier.pt", num_classes=len(class_names), device=device)
         data=[]
         classifier_object=[]

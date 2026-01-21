@@ -77,6 +77,10 @@ if "confirmed_images" not in st.session_state:
     st.session_state.confirmed_images = []
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
+if "seen_message_ids" not in st.session_state:
+    st.session_state.seen_message_ids = set()
+if "current_thread_id" not in st.session_state:
+    st.session_state.current_thread_id = None
 
 # -------------------------------------------------
 # Sidebar
@@ -115,6 +119,8 @@ with st.sidebar:
         st.session_state.pending_images = []
         st.session_state.confirmed_images = []
         st.session_state.show_image_confirm = False
+        st.session_state.seen_message_ids = set()  # Clear seen messages for new chat
+        st.session_state.current_thread_id = thread_id
         st.rerun()
     
     # Thread list in scrollable container
@@ -131,6 +137,8 @@ with st.sidebar:
                         st.session_state.pending_images = []
                         st.session_state.confirmed_images = []
                         st.session_state.show_image_confirm = False
+                        st.session_state.seen_message_ids = set()  # Clear seen messages when switching threads
+                        st.session_state.current_thread_id = str(thread_id)
                         st.rerun()
         else:
             st.caption("No conversations yet")
@@ -326,9 +334,6 @@ user_input = st.chat_input(
 # -------------------------------------------------
 # Handle submit
 # -------------------------------------------------
-if "seen_message_ids" not in st.session_state:
-    st.session_state.seen_message_ids = set()
-
 if user_input:
     image_paths = []
     user_message_parts = []
@@ -373,9 +378,16 @@ if user_input:
             thread_id = st.session_state.thread_id
             is_review = is_waiting_for_review(thread_id)
 
-            # -----------------------------------
-            # RESUME FROM INTERRUPT
-            # -----------------------------------
+            # Store final assistant message to save later
+            final_response = ""
+
+            # Pre-mark previous message IDs
+            for msg in get_messages_by_thread(thread_id):
+                st.session_state.seen_message_ids.add(msg[0])
+
+            # -----------------------------------------
+            # RESUME FLOW
+            # -----------------------------------------
             if is_review:
                 with st.chat_message("user", avatar="👤"):
                     st.write(user_input)
@@ -388,9 +400,7 @@ if user_input:
 
                 cmd = Command(
                     resume=True,
-                    update={
-                        "messages": [HumanMessage(content=user_input)]
-                    }
+                    update={"messages": [HumanMessage(content=user_input)]}
                 )
 
                 stream = run_chat_stream(
@@ -398,9 +408,9 @@ if user_input:
                     command=cmd
                 )
 
-            # -----------------------------------
+            # -----------------------------------------
             # NORMAL FLOW
-            # -----------------------------------
+            # -----------------------------------------
             else:
                 stream = run_chat_stream(
                     thread_id=thread_id,
@@ -408,51 +418,74 @@ if user_input:
                     images_list=image_paths
                 )
 
-            # -----------------------------------
+            # -----------------------------------------
             # STREAM HANDLING
-            # -----------------------------------
+            # -----------------------------------------
             for event in stream:
+
+                # --------------------
                 # INTERRUPT
+                # --------------------
                 if "__interrupt__" in event:
                     interrupt_obj = event["__interrupt__"][0]
                     question = interrupt_obj.value.get("question", "")
                     st.session_state.pending_interrupt = question
                     st.session_state.awaiting_interrupt = True
-                    return
+                    return final_response
 
-                # MESSAGES
+                # --------------------
+                # NORMAL MESSAGES
+                # --------------------
                 if "messages" in event:
                     for msg in event["messages"]:
+
                         if msg.id in st.session_state.seen_message_ids:
                             continue
-
                         st.session_state.seen_message_ids.add(msg.id)
 
-                        # Tool message - Show loading status
+                        # ---- TOOL MESSAGE ----
                         if isinstance(msg, ToolMessage):
                             tool_name = getattr(msg, "name", "tool")
+
+                            # capture tool output
+                            tool_output = msg.content or ""
+                            if tool_output.strip():
+                                final_response += tool_output + "\n"
+
+                            # show progress UI
                             with st.status(f"Running {tool_name}...", expanded=True) as status:
                                 st.write(f"Analyzing with **{tool_name}**...")
                                 st.write("This may take a moment...")
-                                status.update(label=f"{tool_name} complete", state="complete", expanded=False)
+                                status.update(
+                                    label=f"{tool_name} complete",
+                                    state="complete",
+                                    expanded=False
+                                )
 
-                        # Assistant message
+                        # ---- ASSISTANT MESSAGE ----
                         elif isinstance(msg, AIMessage):
-                            yield msg.content
+                            final_response += msg.content      # <-- capture full response
+                            yield msg.content                  # <-- stream to UI
 
-        # Show processing indicator
-        with st.spinner("Processing your request..."):
-            assistant_text = st.write_stream(ai_stream())
+            return final_response
+
+
+        # # Show processing indicator
+        # with st.spinner("Processing your request..."):
+        #     assistant_text = st.write_stream(ai_stream())
+        final_response = st.write_stream(ai_stream())
 
     # -----------------------------
     # Persist final assistant message
     # -----------------------------
-    if assistant_text:
-        save_message(
-            st.session_state.thread_id,
-            "assistant",
-            assistant_text
-        )
+    # if assistant_text:
+    #     save_message(
+    #         st.session_state.thread_id,
+    #         "assistant",
+    #         assistant_text
+    #     )
+    if final_response:
+        save_message(st.session_state.thread_id, "assistant", final_response)
     
     # Log transaction telemetry
     transaction_duration = (time.time() - transaction_start) * 1000
