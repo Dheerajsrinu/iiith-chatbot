@@ -69,6 +69,13 @@ class CroppedProductInference():
         conf: float = 0.25,
         save_image_path: str = "anotated.jpg",
     ):
+        # Check if model is loaded
+        if model_store.product_rec_model is None:
+            raise RuntimeError(
+                "Product recognition model is not loaded. "
+                "Please ensure the model file exists at 'models/rpc_yolov11_4dh3/weights/best.pt' "
+                "and restart the application."
+            )
 
         # Folder to store crops
         out_dir = 'results/products/crops_fine_grained_with_classes/yolov11_4dh/'+request_id

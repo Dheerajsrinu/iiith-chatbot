@@ -16,7 +16,7 @@ import json
 from ast import literal_eval
 from datetime import datetime
 from dotenv import load_dotenv
-from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance, get_user_age_by_thread
+from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance, get_user_age_by_thread, get_user_role_by_thread
 import time
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
@@ -114,6 +114,28 @@ WARNING_THRESHOLDS = {
     "Tissue": 3
 }
 
+# Target stock levels for store manager restocking
+# Order quantity = RESTOCK_TARGET - detected_items
+RESTOCK_TARGETS = {
+    "Alcohol": 10,
+    "Candy": 15,
+    "Canned Food": 20,
+    "Chocolate": 15,
+    "Dessert": 12,
+    "Dried Food": 15,
+    "Dried Fruit": 12,
+    "Drink": 20,
+    "Gum": 15,
+    "Instant Drink": 15,
+    "Instant Noodles": 20,
+    "Milk": 15,
+    "Personal Hygiene": 15,
+    "Puffed Food": 12,
+    "Seasoner": 15,
+    "Stationery": 20,
+    "Tissue": 15
+}
+
 
 # -----------------------------
 # LLM
@@ -134,7 +156,7 @@ llm = ChatOpenAI(
 #     total_tokens = count_tokens_and_log(state["messages"], tools_list)
     
 #     if total_tokens > 16385:
-#         print("⚠️ WARNING: Token count exceeds limit!")
+#         print("WARNING: Token count exceeds limit!")
 
 #     tools_binded_model = llm.bind_tools(tools_list)
 #     print("state['messages']-> ",state["messages"])
@@ -151,9 +173,72 @@ llm = ChatOpenAI(
 def chatbot_node(state: ChatState):
     messages = state["messages"].copy()
     thread_id = state["thread_id"]
+    
+    # Get user_role from state, or fetch from DB if not available
+    user_role = state.get("user_role")
+    if not user_role:
+        user_role = get_user_role_by_thread(thread_id)
+    
     print("thread id is -> ",thread_id)
-    SYSTEM_HEALTH_PROMPT = f"""
-    You are a health-aware assistant.
+    print("user_role in chatbot_node -> ", user_role)
+    
+    # General system prompt for handling all requests
+    GENERAL_SYSTEM_PROMPT = f"""
+    You are a retail checkout assistant. Your primary job is to help users with:
+    
+    1. **Direct Orders** (NO image required):
+       When the user says things like "order 2 candy", "buy 5 chocolates", "I want 3 drinks":
+       - Immediately use the `place_direct_order` tool
+       - Extract the product name and quantity from the user's message
+       - Use the user_id from the USER_CONTEXT in the message
+       - Valid products: Alcohol, Candy, Canned Food, Chocolate, Dessert, Dried Food, Dried Fruit, 
+         Drink, Gum, Instant Drink, Instant Noodles, Milk, Personal Hygiene, Puffed Food, Seasoner, 
+         Stationery, Tissue
+       
+    2. **Image-based Analysis** (Image required):
+       When the user uploads an image and asks to recognize products, count shelves, etc.:
+       - Use `recognize_products`, `detect_shelves`, or `calculate_empty_shelf_percentage` tools
+       
+    3. **General Questions**: Answer politely and offer help.
+    
+    IMPORTANT: 
+    - For direct orders like "order X <product>", DO NOT ask for clarification. 
+    - DO NOT respond with a greeting or list of capabilities.
+    - Just call the `place_direct_order` tool directly with the extracted product and quantity.
+    """
+    
+    # Different system prompts based on user role
+    SYSTEM_HEALTH_PROMPT_CUSTOMER = f"""
+    You are a health-aware retail assistant.
+
+You must produce a response with EXACTLY this structure:
+
+**Detected Items** \n\n
+
+- <Category> × <Quantity>
+
+    **Health Warnings** \n\n
+<only include items that need warnings>
+- <Category> (<Quantity>): <warning text>
+
+Rules:
+- EVERY Category line MUST start with a hyphen (-)
+- Use the hyphen (-) exactly so the output can be rendered as a Streamlit list
+- Always show Detected Items
+- Only show Health Warnings if at least one exists
+- Do NOT warn for non-food items (e.g. Tissue, Stationery, Personal Hygiene)
+- Health warnings must be 1–2 sentences
+- General wellness only
+- No medical advice, diagnosis, or fear-based language
+- Mention moderation or balance
+
+Do not use bullet points.
+Do not add extra sections.
+
+    """
+    
+    SYSTEM_PROMPT_MANAGER = f"""
+    You are a retail inventory assistant helping a store manager with restocking.
 
     You must produce a response with EXACTLY this structure:
 
@@ -161,33 +246,57 @@ def chatbot_node(state: ChatState):
 
     - <Category> × <Quantity>
 
-    **Health Warnings** \n\n
-    <only include items that need warnings>
-    - <Category> (<Quantity>): <warning text>
-
     Rules:
     - EVERY Category line MUST start with a hyphen (-)
     - Use the hyphen (-) exactly so the output can be rendered as a Streamlit list
     - Always show Detected Items
-    - Only show Health Warnings if at least one exists
-    - Do NOT warn for non-food items (e.g. Tissue, Stationery, Personal Hygiene)
-    - Health warnings must be 1–2 sentences
-    - General wellness only
-    - No medical advice, diagnosis, or fear-based language
-    - Mention moderation or balance
+    - Do NOT show any health warnings (this is for store inventory, not personal consumption)
+    - Keep the response professional and focused on inventory
 
     Do not use bullet points.
     Do not add extra sections.
 
     """
+    
     print("\n")
     print("messages in chatbot_node -> ", messages)
     print("\n")
 
 
-    if state.get("detected_items") and state.get("tools_done"):
-        messages.insert(0, SystemMessage(content=SYSTEM_HEALTH_PROMPT))
+    # Only add detected items prompt if:
+    # 1. We have detected items from image analysis
+    # 2. tools_done is True (tools just completed)
+    # 3. The last message was from image-based analysis (has images in kwargs)
+    last_msg = messages[-1] if messages else None
+    has_recent_images = (
+        last_msg and 
+        isinstance(last_msg, HumanMessage) and 
+        last_msg.additional_kwargs.get("images")
+    )
+    
+    # Check if any recent message in the conversation had images
+    has_image_context = any(
+        isinstance(m, HumanMessage) and m.additional_kwargs.get("images")
+        for m in messages[-5:] if isinstance(m, HumanMessage)
+    )
+    
+    if state.get("detected_items") and state.get("tools_done") and has_image_context:
+        # Use appropriate system prompt based on role
+        if user_role == "store_manager":
+            messages.insert(0, SystemMessage(content=SYSTEM_PROMPT_MANAGER))
+            messages.append(
+                HumanMessage(
+                    content=f"""
+Detected items on shelf:
+{state["detected_items"]}
 
+This is a store inventory scan. Show only detected items, no health warnings needed.
+"""
+                )
+            )
+        else:
+            # Customer flow with health warnings
+            messages.insert(0, SystemMessage(content=SYSTEM_HEALTH_PROMPT_CUSTOMER))
         messages.append(
             HumanMessage(
                 content=f"""
@@ -199,6 +308,10 @@ Items requiring health warnings:
 """
             )
         )
+    else:
+        # For non-image requests (direct orders, general queries)
+        # Use the general system prompt to guide the LLM
+        messages.insert(0, SystemMessage(content=GENERAL_SYSTEM_PROMPT))
 
     # Track LLM performance
     llm_start_time = time.time()
@@ -231,11 +344,32 @@ Items requiring health warnings:
 
 def review_interrupt_node(state: ChatState):
     thread_id = state["thread_id"]
+    user_role = state.get("user_role", "customer")
+    detected_items = state.get("detected_items", {})
+    
     # Mark DB state
     mark_waiting_for_review(thread_id)
-    print("starting interrupt")
-    # Interrupt execution and wait for user input
-    user_feedback_query = "Do you want me to proceed with this action? (yes/no)"
+    print(f"starting interrupt - user_role: {user_role}")
+    
+    # Different confirmation messages based on role
+    if user_role == "store_manager":
+        # Calculate restock quantities for store manager
+        restock_items = []
+        for product, detected_qty in detected_items.items():
+            target = RESTOCK_TARGETS.get(product, 10)  # Default target is 10
+            restock_qty = max(0, target - detected_qty)
+            if restock_qty > 0:
+                restock_items.append(f"- {product}: {restock_qty} units (current: {detected_qty}, target: {target})")
+        
+        if restock_items:
+            restock_summary = "\n".join(restock_items)
+            user_feedback_query = f"**Restock Order Summary:**\n{restock_summary}\n\nWould you like to place this restock order? Please respond with yes or no."
+        else:
+            user_feedback_query = "All products are adequately stocked. No restock order needed. Would you like to proceed anyway? Please respond with yes or no."
+    else:
+        # Customer message
+        user_feedback_query = "Would you like to place an order for these items? Please respond with yes or no."
+    
     interrupt(
         {
             "question": user_feedback_query
@@ -259,11 +393,9 @@ def review_decision_node(state: ChatState):
         return {"decision": "rejected"}  # Default to rejected if unclear
 
 def approved_node(state: ChatState):
-    print("approved")
+    print("=== ORDER APPROVED - Proceeding to create order ===")
+    # Don't add a message here - let create_order_node handle the response
     return {
-        "messages": [
-            AIMessage(content="Order Creation Requested .")
-        ],
         "tools_done": False
     }
 
@@ -304,9 +436,25 @@ def chatbot_router(state: ChatState):
         if hasattr(tool_route, "to") and tool_route.to == "tools":
             return "tools"
 
-    # --- Review after tools ---
+    # --- Check for direct order completion FIRST ---
+    # If place_direct_order was just called, go straight to END
+    for msg in reversed(state.get("messages", [])):
+        if isinstance(msg, ToolMessage):
+            if msg.name == "place_direct_order":
+                print("[ROUTER] Direct order completed, going to END")
+                return END
+            break  # Only check the last tool message
+    
+    # --- Review after image-based tools ---
+    # Only go to review if:
+    # 1. tools_done is True (from recognize_products)
+    # 2. We have detected items
     if state.get("tools_done", False) and not is_waiting_for_review(state["thread_id"]):
-        return "needs_review"
+        detected_items = state.get("detected_items", {})
+        if detected_items and len(detected_items) > 0:
+            return "needs_review"
+        else:
+            print("No items detected, skipping review")
 
     print("Going to end")
     # --- End ---
@@ -318,9 +466,23 @@ def chatbot_router(state: ChatState):
 def tools_done_node(state: ChatState):
     warnings_input = []
     detected_items = {}
+    has_successful_detection = False
+    thread_id = state["thread_id"]
+    
+    # Get user role to determine if health warnings apply
+    user_role = get_user_role_by_thread(thread_id)
+    print(f"User role: {user_role}")
     print("state['messages']-> ", state["messages"])
     
-    # Find the latest tool message
+    # Check for direct order - skip processing
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, ToolMessage):
+            if msg.name == "place_direct_order":
+                print("[TOOLS_DONE] Direct order tool, skipping state updates")
+                return {"user_role": user_role}  # Just pass through, don't modify detection state
+            break
+    
+    # Find the latest tool message for recognize_products
     for msg in reversed(state["messages"]):
         if isinstance(msg, ToolMessage) and msg.name == "recognize_products":
             try:
@@ -341,49 +503,68 @@ def tools_done_node(state: ChatState):
                         else:
                             detected_items = data
                     
+                    # Only mark as successful if we actually have detected items
+                    if detected_items and len(detected_items) > 0:
+                        has_successful_detection = True
+                    
                     products = detected_items if isinstance(detected_items, dict) else {}
                     
-                    for category, qty in products.items():
-                        if isinstance(qty, (int, float)):
-                            threshold = WARNING_THRESHOLDS.get(category)
-                            if threshold is not None and qty > threshold:
-                                warnings_input.append({
-                                    "category": category,
-                                    "quantity": int(qty)
-                                })
+                    # Health warnings only apply to customers, NOT store managers
+                    if user_role != "store_manager":
+                        for category, qty in products.items():
+                            if isinstance(qty, (int, float)):
+                                threshold = WARNING_THRESHOLDS.get(category)
+                                if threshold is not None and qty > threshold:
+                                    warnings_input.append({
+                                        "category": category,
+                                        "quantity": int(qty)
+                                    })
+                                    
                 elif payload.get("status") == "error":
                     print(f"Tool returned error: {payload.get('message', 'Unknown error')}")
+                    has_successful_detection = False
                     
             except (json.JSONDecodeError, TypeError, KeyError) as e:
                 print(f"Error parsing tool message: {e}")
+                has_successful_detection = False
             break
     
     print("warnings_input is -> ", warnings_input)
+    print(f"has_successful_detection: {has_successful_detection}, detected_items: {detected_items}")
+    
+    # Only set tools_done=True if we successfully detected products
     return {
-        "tools_done": True,
+        "tools_done": has_successful_detection,
         "detected_items": detected_items, 
-        "health_warning_input": warnings_input
+        "health_warning_input": warnings_input,
+        "user_role": user_role
     }
 
 def preprocess_node(state: ChatState):
     """
-    Reset per-request tool state when a new image arrives.
+    Reset per-request tool state for new requests.
+    This prevents old detected_items from showing in new conversations.
+    
+    IMPORTANT: Must RETURN state changes for LangGraph checkpointer to persist them.
     """
     messages = state["messages"]
 
     if messages:
         last = messages[-1]
 
-        # Detect a new image-based user request
-        if (
-            isinstance(last, HumanMessage)
-            and last.additional_kwargs.get("images")
-        ):
-            state.pop("detected_items", None)
-            state.pop("health_warning_input", None)
-            state["tools_done"] = False
+        # Reset state for any new HumanMessage (both image and text-only requests)
+        if isinstance(last, HumanMessage):
+            # Always clear detection state for new requests
+            # This ensures direct orders don't mix with previous image scans
+            print("[PREPROCESS] Clearing detection state for new request")
+            return {
+                "detected_items": {},
+                "health_warning_input": [],
+                "tools_done": False
+            }
 
-    return state
+    # No changes needed
+    return {}
 
 def parse_user_order_request(message: str, detected_items: dict) -> dict:
     """
@@ -497,11 +678,79 @@ def validate_order_against_detected(requested: dict, detected: dict) -> tuple[bo
 
 
 def create_order_node(state: ChatState):
+    print("\n=== CREATE_ORDER_NODE STARTED ===")
+    
     detected_items = state.get("detected_items", {})
     thread_id = state["thread_id"]
+    user_role = state.get("user_role")
+    
+    # Fetch role from DB if not in state
+    if not user_role:
+        user_role = get_user_role_by_thread(thread_id)
+    
+    print(f"detected_items: {detected_items}")
+    print(f"thread_id: {thread_id}")
+    print(f"user_role: {user_role}")
+    
+    # If no detected items, cannot create order
+    if not detected_items:
+        print("ERROR: No detected items")
+        return {
+            "messages": [
+                AIMessage(content="Order creation failed. No products were detected from the image.")
+            ]
+        }
+    
+    # =============================================
+    # STORE MANAGER FLOW - Restock Order
+    # =============================================
+    if user_role == "store_manager":
+        print("Processing STORE MANAGER restock order")
+        
+        # Calculate restock quantities: target - detected
+        restock_products = {}
+        for product, detected_qty in detected_items.items():
+            target = RESTOCK_TARGETS.get(product, 10)  # Default target is 10
+            restock_qty = max(0, target - detected_qty)
+            if restock_qty > 0:
+                restock_products[product] = restock_qty
+        
+        print(f"Restock products to order: {restock_products}")
+        
+        if not restock_products:
+            return {
+                "messages": [
+                    AIMessage(content="No restock order needed. All products are at or above target stock levels.")
+                ]
+            }
+        
+        try:
+            # Create the restock order (no age restrictions for managers)
+            order_id = create_order(user_id=thread_id, products=restock_products)
+            print(f"Restock order created with ID: {order_id}")
+            
+            order_details = "\n".join([
+                f"- {name}: {qty} units" for name, qty in restock_products.items()
+            ])
+            
+            return {
+                "messages": [
+                    AIMessage(content=f"Restock order has been created.\n\nOrder ID: {order_id}\n\nItems ordered for restocking:\n{order_details}")
+                ]
+            }
+        except Exception as e:
+            print(f"ERROR creating restock order: {e}")
+            return {
+                "messages": [
+                    AIMessage(content=f"Failed to create restock order. Error: {str(e)}")
+                ]
+            }
+    
+    # =============================================
+    # CUSTOMER FLOW - Regular Order
+    # =============================================
     
     # Get the user's order request message (the message before the confirmation)
-    # We need to find the message where user specified what they want to order
     user_order_message = ""
     for msg in reversed(state["messages"]):
         if isinstance(msg, HumanMessage):
@@ -511,17 +760,7 @@ def create_order_node(state: ChatState):
                 user_order_message = msg.content
                 break
     
-    print("\n", "detected_items are -> ", detected_items, "\n")
-    print("\n", "thread_id is -> ", thread_id, "\n")
     print("User order message is -> ", user_order_message)
-    
-    # If no detected items, cannot create order
-    if not detected_items:
-        return {
-            "messages": [
-                AIMessage(content="❌ Order creation failed. No products were detected from the image.")
-            ]
-        }
     
     # Parse user's requested products from their message
     requested_products = parse_user_order_request(user_order_message, detected_items)
@@ -533,7 +772,7 @@ def create_order_node(state: ChatState):
         requested_products = detected_items.copy()
         print("No specific products parsed, using all detected items")
     
-    # Validate requested products against detected items
+    # Validate requested products against detected items (customers can't order more than detected)
     is_valid, error_message, validated_products = validate_order_against_detected(
         requested_products, detected_items
     )
@@ -541,18 +780,18 @@ def create_order_node(state: ChatState):
     if not is_valid:
         return {
             "messages": [
-                AIMessage(content=f"❌ Order creation cancelled. You have requested more products than detected:\n{error_message}\n\nPlease adjust your order quantities.")
+                AIMessage(content=f"Order creation cancelled. You have requested more products than detected:\n{error_message}\n\nPlease adjust your order quantities.")
             ]
         }
     
     if not validated_products:
         return {
             "messages": [
-                AIMessage(content="❌ Order creation cancelled. No valid products found in your request.")
+                AIMessage(content="Order creation cancelled. No valid products found in your request.")
             ]
         }
     
-    # Check if alcohol is in requested products and user is a minor
+    # Age restriction check for alcohol (CUSTOMERS ONLY)
     alcohol_quantity = 0
     for item_name, qty in validated_products.items():
         if item_name.lower() == "alcohol":
@@ -568,7 +807,7 @@ def create_order_node(state: ChatState):
             if not validated_products:
                 return {
                     "messages": [
-                        AIMessage(content="❌ Order creation failed. Alcohol cannot be sold to minors (under 21 years old), and no other products were requested.")
+                        AIMessage(content="Order creation failed. Alcohol cannot be sold to customers under 21 years old, and no other products were requested.")
                     ]
                 }
             else:
@@ -576,7 +815,7 @@ def create_order_node(state: ChatState):
                 order_id = create_order(user_id=thread_id, products=validated_products)
                 return {
                     "messages": [
-                        AIMessage(content=f"⚠️ Alcohol removed from order (not available for customers under 21).\n\n✅ Order created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
+                        AIMessage(content=f"**Note:** Alcohol removed from order (not available for customers under 21).\n\nOrder created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
                                   "\n".join([f"- {name}: {qty}" for name, qty in validated_products.items()]))
                     ]
                 }
@@ -586,7 +825,7 @@ def create_order_node(state: ChatState):
     
     return {
         "messages": [
-            AIMessage(content=f"✅ Order created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
+            AIMessage(content=f"Order created successfully with order_id {order_id}.\n\n**Ordered Products:**\n" + 
                       "\n".join([f"- {name}: {qty}" for name, qty in validated_products.items()]))
         ]
     }
