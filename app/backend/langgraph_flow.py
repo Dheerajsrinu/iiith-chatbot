@@ -16,7 +16,8 @@ import json
 from ast import literal_eval
 from datetime import datetime
 from dotenv import load_dotenv
-from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance, get_user_age_by_thread, get_user_role_by_thread
+from app.backend.db import mark_waiting_for_review, clear_waiting_for_review, is_waiting_for_review, create_order, log_model_performance, get_user_age_by_thread, get_user_role_by_thread, log_model_verification, compare_model_outputs
+import re
 import time
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
@@ -152,22 +153,41 @@ llm = ChatOpenAI(
 # Chat Node
 # -----------------------------
 
-# def chatbot_node(state: ChatState):
-#     total_tokens = count_tokens_and_log(state["messages"], tools_list)
+def parse_llm_detected_items(llm_content: str) -> dict:
+    """
+    Parse LLM response to extract detected items.
     
-#     if total_tokens > 16385:
-#         print("WARNING: Token count exceeds limit!")
-
-#     tools_binded_model = llm.bind_tools(tools_list)
-#     print("state['messages']-> ",state["messages"])
-#     response = tools_binded_model.invoke(state["messages"])
-
-#     print("response from llm is -> ", response)
-
-#     return {
-#         "messages": [response],
-#         "tools_done": state.get("tools_done", False)
-#     }
+    Looks for patterns like:
+    - Category × Quantity
+    - Category: Quantity
+    - - Category × Quantity
+    
+    Returns dict like {"Candy": 3, "Alcohol": 2}
+    """
+    detected = {}
+    
+    if not llm_content:
+        return detected
+    
+    # Pattern 1: "- Category × Quantity" or "Category × Quantity"
+    pattern1 = r'[-•]?\s*([A-Za-z\s]+?)\s*[×x]\s*(\d+)'
+    matches = re.findall(pattern1, llm_content, re.IGNORECASE)
+    for category, qty in matches:
+        category = category.strip().title()
+        # Normalize common variations
+        category = category.replace("Dried Food", "Dried food").replace("Canned Food", "Canned food")
+        if category and qty:
+            detected[category] = int(qty)
+    
+    # Pattern 2: "Category: Quantity" (for lists)
+    pattern2 = r'[-•]?\s*([A-Za-z\s]+?):\s*(\d+)'
+    matches2 = re.findall(pattern2, llm_content, re.IGNORECASE)
+    for category, qty in matches2:
+        category = category.strip().title()
+        if category and qty and category not in detected:
+            detected[category] = int(qty)
+    
+    return detected
 
 
 def chatbot_node(state: ChatState):
@@ -336,6 +356,35 @@ Items requiring health warnings:
     except Exception as e:
         print(f"Failed to log LLM performance: {e}")
 
+    # --- Model Verification: Compare Inference vs LLM Output ---
+    # Only verify after image-based product recognition (when tools_done and detected_items exist)
+    if state.get("tools_done") and state.get("detected_items") and has_image_context:
+        try:
+            inference_output = state.get("detected_items", {})
+            llm_content = response.content if hasattr(response, 'content') else ""
+            
+            # Parse LLM response to extract reported items
+            llm_output = parse_llm_detected_items(llm_content)
+            
+            # Compare outputs
+            match_status, mismatched_items = compare_model_outputs(inference_output, llm_output)
+            
+            # Log verification
+            log_model_verification(
+                thread_id=state.get("thread_id"),
+                inference_output=inference_output,
+                llm_output=llm_output,
+                match_status=match_status,
+                mismatched_items=mismatched_items if not match_status else None
+            )
+            
+            print(f"[VERIFICATION] Match: {match_status}, Inference: {inference_output}, LLM: {llm_output}")
+            if not match_status:
+                print(f"[VERIFICATION] Mismatches: {mismatched_items}")
+                
+        except Exception as e:
+            print(f"[VERIFICATION] Error logging verification: {e}")
+
     return {
         "messages": [response],
         "tools_done": state.get("tools_done", False)
@@ -460,8 +509,6 @@ def chatbot_router(state: ChatState):
     # --- End ---
     return END
 
-# def tools_done_node(state: ChatState):
-#     return {"tools_done": True}
 
 def tools_done_node(state: ChatState):
     warnings_input = []
@@ -479,7 +526,7 @@ def tools_done_node(state: ChatState):
         if isinstance(msg, ToolMessage):
             if msg.name == "place_direct_order":
                 print("[TOOLS_DONE] Direct order tool, skipping state updates")
-                return {"user_role": user_role}  # Just pass through, don't modify detection state
+                return {"user_role": user_role}
             break
     
     # Find the latest tool message for recognize_products
@@ -488,28 +535,22 @@ def tools_done_node(state: ChatState):
             try:
                 payload = json.loads(msg.content)
                 
-                # Check if we have a successful response with data
                 if payload.get("status") == "success" and "data" in payload:
                     data = payload["data"]
                     
-                    # Handle different data structures
                     if isinstance(data, dict):
-                        # Check for products_count key
                         if "products_count" in data:
                             detected_items = data["products_count"]
-                        # Or maybe the data itself is the products count
                         elif all(isinstance(v, (int, float)) for v in data.values()):
                             detected_items = data
                         else:
                             detected_items = data
                     
-                    # Only mark as successful if we actually have detected items
                     if detected_items and len(detected_items) > 0:
                         has_successful_detection = True
                     
                     products = detected_items if isinstance(detected_items, dict) else {}
                     
-                    # Health warnings only apply to customers, NOT store managers
                     if user_role != "store_manager":
                         for category, qty in products.items():
                             if isinstance(qty, (int, float)):

@@ -8,7 +8,9 @@ from app.backend.db import (
     get_all_orders,
     get_telemetry_stats,
     get_model_performance_stats,
-    get_transaction_stats
+    get_transaction_stats,
+    get_model_verification_stats,
+    get_model_verification_logs
 )
 from app.ui.styles import apply_custom_styles, COLORS
 
@@ -378,6 +380,84 @@ with tab_telemetry:
                     st.metric(model, f"{avg_s:.2f} s")
         else:
             st.info("No recent performance data available")
+        
+        st.divider()
+        
+        # Model Verification - Inference vs LLM Agreement
+        st.markdown("##### Model Verification (Inference vs LLM)")
+        st.caption("Compares product detection from ML models with what LLM reports to users")
+        
+        verification_stats = get_model_verification_stats()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            agreement_rate = verification_stats.get('agreement_rate', 100.0)
+            st.metric("Agreement Rate", f"{agreement_rate}%")
+        
+        with col2:
+            total_verifications = verification_stats.get('total_verifications', 0)
+            st.metric("Total Verifications", total_verifications)
+        
+        with col3:
+            matches = verification_stats.get('matches', 0)
+            st.metric("Matches", matches)
+        
+        with col4:
+            mismatches = verification_stats.get('mismatches', 0)
+            delta_color = "off" if mismatches == 0 else "inverse"
+            st.metric("Mismatches", mismatches)
+        
+        # Recent agreement rate (24 hours)
+        st.markdown("###### Recent Verification (Last 24 Hours)")
+        recent_col1, recent_col2 = st.columns(2)
+        
+        with recent_col1:
+            recent_rate = verification_stats.get('recent_agreement_rate', 100.0)
+            st.metric("Recent Agreement Rate", f"{recent_rate}%")
+        
+        with recent_col2:
+            recent_total = verification_stats.get('recent_total', 0)
+            st.metric("Recent Verifications", recent_total)
+        
+        # Verification logs viewer
+        st.markdown("###### Verification Logs")
+        
+        filter_option = st.selectbox(
+            "Filter by status:",
+            ["All", "Matches Only", "Mismatches Only"],
+            key="verification_filter"
+        )
+        
+        filter_map = {
+            "All": None,
+            "Matches Only": "match",
+            "Mismatches Only": "mismatch"
+        }
+        
+        logs = get_model_verification_logs(match_filter=filter_map[filter_option], limit=20)
+        
+        if logs:
+            for log in logs:
+                match_icon = "Match" if log['match_status'] else "MISMATCH"
+                match_color = "green" if log['match_status'] else "red"
+                
+                with st.expander(f"{match_icon} - {log['created_at'].strftime('%Y-%m-%d %H:%M:%S') if log['created_at'] else 'N/A'}"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Inference Output:**")
+                        st.json(log['inference_output'])
+                    
+                    with col2:
+                        st.markdown("**LLM Output:**")
+                        st.json(log['llm_output'])
+                    
+                    if not log['match_status'] and log['mismatched_items']:
+                        st.markdown("**Mismatched Items:**")
+                        st.json(log['mismatched_items'])
+        else:
+            st.info("No verification logs available yet. Logs will appear after image-based product recognition.")
             
     except Exception as e:
         st.error(f"Error loading telemetry: {e}")

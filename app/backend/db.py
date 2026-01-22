@@ -167,6 +167,36 @@ def init_db():
                 ON model_performance(created_at);
             """)
 
+            # Model verification logs table - tracks inference vs LLM output consistency
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS model_verification_logs (
+                    id SERIAL PRIMARY KEY,
+                    thread_id UUID,
+                    inference_output JSONB NOT NULL,
+                    llm_output JSONB NOT NULL,
+                    match_status BOOLEAN NOT NULL,
+                    mismatched_items JSONB,
+                    total_inference_items INT,
+                    total_llm_items INT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_verification_logs_thread
+                ON model_verification_logs(thread_id);
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_verification_logs_match
+                ON model_verification_logs(match_status);
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_verification_logs_created
+                ON model_verification_logs(created_at);
+            """)
+
             conn.commit()
 
 # ==================== THREAD FUNCTIONS ====================
@@ -598,3 +628,191 @@ def get_user_role_by_thread(thread_id: str) -> str:
             if row is None:
                 return "customer"
             return row[0] or "customer"
+
+
+# ==================== MODEL VERIFICATION FUNCTIONS ====================
+
+def log_model_verification(
+    thread_id: str,
+    inference_output: dict,
+    llm_output: dict,
+    match_status: bool,
+    mismatched_items: dict = None
+):
+    """
+    Log model verification data comparing inference output vs LLM output.
+    
+    Args:
+        thread_id: The chat thread ID
+        inference_output: Raw output from inference model (e.g., {"Candy": 3, "Alcohol": 2})
+        llm_output: Parsed output from LLM response (e.g., {"Candy": 3, "Alcohol": 2})
+        match_status: True if outputs match, False otherwise
+        mismatched_items: Dict of items that differed (e.g., {"Alcohol": {"inference": 2, "llm": 1}})
+    """
+    import json
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            total_inference = sum(inference_output.values()) if inference_output else 0
+            total_llm = sum(llm_output.values()) if llm_output else 0
+            
+            cur.execute(
+                """
+                INSERT INTO model_verification_logs 
+                (thread_id, inference_output, llm_output, match_status, mismatched_items, 
+                 total_inference_items, total_llm_items)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    thread_id,
+                    json.dumps(inference_output),
+                    json.dumps(llm_output),
+                    match_status,
+                    json.dumps(mismatched_items) if mismatched_items else None,
+                    total_inference,
+                    total_llm
+                )
+            )
+            conn.commit()
+
+
+def compare_model_outputs(inference_output: dict, llm_output: dict) -> tuple:
+    """
+    Compare inference output with LLM output and identify mismatches.
+    
+    Returns:
+        (match_status: bool, mismatched_items: dict)
+    """
+    mismatched_items = {}
+    
+    # Normalize keys to lowercase for comparison
+    inference_normalized = {k.lower().strip(): v for k, v in (inference_output or {}).items()}
+    llm_normalized = {k.lower().strip(): v for k, v in (llm_output or {}).items()}
+    
+    # Get all unique keys
+    all_keys = set(inference_normalized.keys()) | set(llm_normalized.keys())
+    
+    for key in all_keys:
+        inf_val = inference_normalized.get(key, 0)
+        llm_val = llm_normalized.get(key, 0)
+        
+        if inf_val != llm_val:
+            # Find original key name (prefer inference key)
+            original_key = None
+            for k in (inference_output or {}):
+                if k.lower().strip() == key:
+                    original_key = k
+                    break
+            if not original_key:
+                for k in (llm_output or {}):
+                    if k.lower().strip() == key:
+                        original_key = k
+                        break
+            
+            mismatched_items[original_key or key] = {
+                "inference": inf_val,
+                "llm": llm_val
+            }
+    
+    match_status = len(mismatched_items) == 0
+    return match_status, mismatched_items
+
+
+def get_model_verification_stats():
+    """Get model verification statistics for dashboard"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            stats = {}
+            
+            # Total verifications
+            cur.execute("SELECT COUNT(*) FROM model_verification_logs")
+            stats['total_verifications'] = cur.fetchone()[0]
+            
+            # Match count
+            cur.execute("SELECT COUNT(*) FROM model_verification_logs WHERE match_status = TRUE")
+            stats['matches'] = cur.fetchone()[0]
+            
+            # Mismatch count
+            cur.execute("SELECT COUNT(*) FROM model_verification_logs WHERE match_status = FALSE")
+            stats['mismatches'] = cur.fetchone()[0]
+            
+            # Agreement rate
+            if stats['total_verifications'] > 0:
+                stats['agreement_rate'] = round(
+                    (stats['matches'] / stats['total_verifications']) * 100, 2
+                )
+            else:
+                stats['agreement_rate'] = 100.0
+            
+            # Recent verifications (last 24 hours)
+            cur.execute("""
+                SELECT COUNT(*), 
+                       SUM(CASE WHEN match_status THEN 1 ELSE 0 END) as matches
+                FROM model_verification_logs
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            """)
+            row = cur.fetchone()
+            stats['recent_total'] = row[0] or 0
+            stats['recent_matches'] = row[1] or 0
+            if stats['recent_total'] > 0:
+                stats['recent_agreement_rate'] = round(
+                    (stats['recent_matches'] / stats['recent_total']) * 100, 2
+                )
+            else:
+                stats['recent_agreement_rate'] = 100.0
+            
+            # Trends (last 7 days)
+            cur.execute("""
+                SELECT DATE(created_at) as date,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN match_status THEN 1 ELSE 0 END) as matches
+                FROM model_verification_logs
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY date
+            """)
+            stats['trends'] = cur.fetchall()
+            
+            return stats
+
+
+def get_model_verification_logs(match_filter: str = None, limit: int = 50):
+    """
+    Get recent model verification logs for audit.
+    
+    Args:
+        match_filter: 'match', 'mismatch', or None for all
+        limit: Max number of records to return
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            query = """
+                SELECT thread_id, inference_output, llm_output, match_status, 
+                       mismatched_items, total_inference_items, total_llm_items, created_at
+                FROM model_verification_logs
+            """
+            
+            params = []
+            if match_filter == 'match':
+                query += " WHERE match_status = TRUE"
+            elif match_filter == 'mismatch':
+                query += " WHERE match_status = FALSE"
+            
+            query += " ORDER BY created_at DESC LIMIT %s"
+            params.append(limit)
+            
+            cur.execute(query, params)
+            
+            rows = cur.fetchall()
+            logs = []
+            for row in rows:
+                logs.append({
+                    'thread_id': str(row[0]) if row[0] else None,
+                    'inference_output': row[1],
+                    'llm_output': row[2],
+                    'match_status': row[3],
+                    'mismatched_items': row[4],
+                    'total_inference_items': row[5],
+                    'total_llm_items': row[6],
+                    'created_at': row[7]
+                })
+            return logs
