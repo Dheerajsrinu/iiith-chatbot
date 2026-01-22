@@ -20,13 +20,61 @@ A retail-focused AI chatbot for product recognition, shelf analysis, and automat
 
 ## Overview
 
-The IIITH Chatbot is an intelligent retail assistant that combines:
+The IIITH Retail Chatbot is an AI-powered retail checkout assistant designed for both **Customers** and **Store Managers**. It combines computer vision, natural language processing, and intelligent workflow automation to streamline retail operations.
+
+### What Can Users Do?
+
+#### For Customers
+
+| Feature | Description |
+|---------|-------------|
+| **Image-Based Shopping** | Upload photos of retail shelves to automatically detect and identify products, then place orders directly from detected items |
+| **Direct Ordering** | Place orders through natural conversation (e.g., "Order 2 chocolates and 1 milk") without uploading images |
+| **Product Recognition** | Get detailed information about products visible in uploaded shelf images |
+| **Shelf Analysis** | View shelf occupancy, count products, and see empty space percentages |
+| **Nutrition Information** | Look up nutritional details for recognized products |
+| **Health Warnings** | Receive automatic health advisories when ordering excessive quantities of certain products (candy, alcohol, etc.) |
+| **Age Verification** | Age-restricted items like alcohol are validated against user profile before checkout |
+| **Order History** | View past orders with details and status on the Orders Dashboard |
+
+#### For Store Managers
+
+| Feature | Description |
+|---------|-------------|
+| **All Customer Features** | Full access to product recognition, shelf analysis, and ordering capabilities |
+| **Restocking Orders** | Upload shelf images to automatically calculate restock quantities based on inventory thresholds |
+| **Manager Dashboard** | Comprehensive admin panel with multiple tabs for business insights |
+| **User Management** | View all registered users with search and role filters |
+| **Order Oversight** | Browse all orders across the platform with date range and user filters |
+| **Telemetry Dashboard** | Monitor system performance including model response times, transaction durations, and usage statistics |
+| **Model Verification** | Audit ML model accuracy by comparing inference outputs against LLM interpretations with agreement rate metrics |
+
+### Core Capabilities
+
+| Capability | Description |
+|------------|-------------|
+| **Shelf Detection** | Automatically identify and count shelf rows/levels in retail images |
+| **Product Detection** | Detect and count individual product items on shelves |
+| **Empty Space Calculation** | Calculate the percentage of empty shelf space for inventory management |
+| **Product Recognition** | Identify specific product names and categories using trained ML models |
+| **Conversational AI** | Natural language interface for all operations - just chat like you would with a store assistant |
+| **Human-in-the-Loop** | Review and confirm orders before they are placed |
+
+### User Roles
+
+| Role | Access Level | Special Features |
+|------|--------------|------------------|
+| **Customer** | Standard | Health warnings, age restrictions, personal order history |
+| **Store Manager** | Full | Manager Dashboard, all orders view, telemetry, no health/age restrictions on restocking |
+
+### Technology Highlights
 
 - **Computer Vision**: YOLO-based object detection for shelf and product analysis
 - **LLM Integration**: GPT-powered natural language understanding and response generation
 - **LangGraph Flow**: State machine-based conversation orchestration with tool calling
 - **Guardrail Validation**: Request filtering to ensure retail-focused conversations
-- **Human-in-the-Loop**: Review and approval workflow for order creation
+- **Role-Based Access Control**: Different experiences for Customers vs Store Managers
+- **Telemetry & Monitoring**: Real-time performance tracking and model verification
 
 ---
 
